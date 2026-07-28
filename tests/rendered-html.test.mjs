@@ -37,7 +37,7 @@ test("server-renders the Buzz Inside shell", async () => {
   assert.match(html, /<title>Buzz Inside — private workspace search<\/title>/i);
   assert.match(html, /Look inside your Buzz\./);
   assert.match(html, /no backend · no analytics · no DMs · read-only/i);
-  assert.match(html, /doesn(?:'|&#x27;)t persist your nsec/i);
+  assert.doesNotMatch(html, /doesn(?:'|&#x27;)t persist your nsec/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 

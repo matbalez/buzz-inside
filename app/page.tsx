@@ -10,6 +10,12 @@ import {
   useState,
 } from "react";
 import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
+import { provisionBuildChannel } from "./build-channel";
+import type {
+  BuildChannelResult,
+  BuildPhase,
+  BuildSocket,
+} from "./build-channel";
 
 type Phase =
   | "idle"
@@ -225,8 +231,14 @@ export default function Home() {
   const [feedMode, setFeedMode] = useState<FeedMode>("recent");
   const [loadingResults, setLoadingResults] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
+  const [buildPhase, setBuildPhase] = useState<BuildPhase>("idle");
+  const [buildStatus, setBuildStatus] = useState("");
+  const [buildChannel, setBuildChannel] = useState<BuildChannelResult | null>(
+    null,
+  );
 
   const socketRef = useRef<WebSocket | null>(null);
+  const buildSocketRef = useRef<BuildSocket | null>(null);
   const secretKeyRef = useRef<Uint8Array | undefined>(undefined);
   const authEventIdRef = useRef("");
   const identityRef = useRef("");
@@ -297,6 +309,11 @@ export default function Home() {
     const socket = socketRef.current;
     socketRef.current = null;
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000);
+    const buildSocket = buildSocketRef.current;
+    buildSocketRef.current = null;
+    if (buildSocket && buildSocket.readyState < 2) {
+      buildSocket.close(1000);
+    }
     secretKeyRef.current?.fill(0);
     secretKeyRef.current = undefined;
     authEventIdRef.current = "";
@@ -317,6 +334,9 @@ export default function Home() {
     setFeedMode("recent");
     setLoadingResults(false);
     setSessionReady(false);
+    setBuildPhase("idle");
+    setBuildStatus("");
+    setBuildChannel(null);
     setError("");
     setPhase("idle");
   }, []);
@@ -597,6 +617,48 @@ export default function Home() {
     }
   }
 
+  async function fixItInBuzz() {
+    if (buildSocketRef.current) return;
+    const secretKey = secretKeyRef.current;
+    if (!sessionReady || !secretKey) {
+      setBuildPhase("error");
+      setBuildStatus("Reconnect your identity before creating a build channel.");
+      return;
+    }
+
+    setBuildPhase("authenticating");
+    setBuildStatus("");
+    setBuildChannel(null);
+
+    let operationSocket: BuildSocket | null = null;
+    try {
+      const result = await provisionBuildChannel(
+        secretKey,
+        setBuildPhase,
+        (socket) => {
+          if (socket) {
+            operationSocket = socket;
+            buildSocketRef.current = socket;
+          } else if (buildSocketRef.current === operationSocket) {
+            buildSocketRef.current = null;
+          }
+        },
+      );
+      setBuildChannel(result);
+      setBuildPhase("success");
+      setBuildStatus(
+        `created #${result.channelName} on Flint · archives after 6 hours idle`,
+      );
+    } catch (caught) {
+      setBuildPhase("error");
+      setBuildStatus(
+        caught instanceof Error
+          ? caught.message
+          : "Could not create the Flint build channel.",
+      );
+    }
+  }
+
   const allChannels = useMemo(() => {
     const map = new Map<string, Channel>();
     for (const event of [...channelEvents].reverse()) {
@@ -858,6 +920,18 @@ export default function Home() {
         : selectedChannel === "all"
           ? "Recent activity"
           : `# ${channelMap.get(selectedChannel)?.name || selectedChannel}`;
+  const building =
+    buildPhase === "authenticating" ||
+    buildPhase === "creating" ||
+    buildPhase === "posting";
+  const buildProgress =
+    buildPhase === "authenticating"
+      ? "checking Flint membership…"
+      : buildPhase === "creating"
+        ? "creating a 6-hour channel…"
+        : buildPhase === "posting"
+          ? "posting the invitation…"
+          : "";
 
   useEffect(() => {
     if (loadingResults) return;
@@ -899,7 +973,7 @@ export default function Home() {
             buzz inside
           </a>
           <span className="slash">/</span>
-          <span>read only</span>
+          <span>read-only browsing</span>
           {sessionReady ? (
             <>
               <span className="slash">/</span>
@@ -995,7 +1069,7 @@ export default function Home() {
           ) : null}
 
           <div className="privacy-note">
-            <p>no backend · no analytics · no DMs · read-only</p>
+            <p>no backend · no analytics · no DMs · read-only browsing</p>
           </div>
         </section>
       ) : (
@@ -1227,6 +1301,41 @@ export default function Home() {
           ) : null}
         </div>
       )}
+      <footer className="site-footer">
+        <a
+          href="https://github.com/matbalez/buzz-inside"
+          target="_blank"
+          rel="noreferrer"
+        >
+          buzz inside is open source
+        </a>
+        {sessionReady ? (
+          <div className="build-footer">
+            {buildStatus || buildProgress ? (
+              <span
+                className={buildPhase === "error" ? "build-error" : "quiet"}
+                role={buildPhase === "error" ? "alert" : "status"}
+                title={
+                  buildChannel ? `channel ${buildChannel.channelId}` : undefined
+                }
+              >
+                {buildStatus || buildProgress}
+              </span>
+            ) : (
+              <span className="quiet">build on Flint · 6-hour idle channel</span>
+            )}
+            <button
+              className="fix-button"
+              type="button"
+              onClick={fixItInBuzz}
+              disabled={building}
+              title="Create a public six-hour build channel on Flint"
+            >
+              🐝 fix it in buzz
+            </button>
+          </div>
+        ) : null}
+      </footer>
     </main>
   );
 }

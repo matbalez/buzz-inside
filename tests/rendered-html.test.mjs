@@ -36,12 +36,19 @@ test("server-renders the Buzz Inside shell", async () => {
   const html = await response.text();
   assert.match(html, /<title>Buzz Inside — private workspace search<\/title>/i);
   assert.match(html, /Look inside your Buzz\./);
-  assert.match(html, /no backend · no analytics · no DMs · read-only/i);
+  assert.match(
+    html,
+    /no backend · no analytics · no DMs · read-only browsing/i,
+  );
+  assert.match(
+    html,
+    /href="https:\/\/github\.com\/matbalez\/buzz-inside"[^>]*>buzz inside is open source<\/a>/i,
+  );
   assert.doesNotMatch(html, /doesn(?:'|&#x27;)t persist your nsec/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
-test("keeps the prototype read-only and transient by construction", async () => {
+test("keeps relay browsing transient and read-only by construction", async () => {
   const [page, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -56,9 +63,49 @@ test("keeps the prototype read-only and transient by construction", async () => 
   assert.match(page, /"channel_created"/);
   assert.match(page, /"member_joined"/);
   assert.doesNotMatch(page, /localStorage|sessionStorage|indexedDB/);
-  assert.doesNotMatch(page, /\["EVENT",/);
-  assert.doesNotMatch(page, /kind:\s*(9|40002|45001|45003)/);
+  assert.doesNotMatch(page, /kind:\s*(40002|45001|45003)/);
   assert.match(layout, /Buzz Inside/);
   assert.match(packageJson, /"nostr-tools"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+});
+
+test("limits the opt-in write path to the Flint build-channel handshake", async () => {
+  const [page, buildChannel] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/build-channel.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(
+    buildChannel,
+    /BUILD_RELAY_URL\s*=\s*"wss:\/\/flint\.communities\.buzz\.xyz\/"/,
+  );
+  assert.match(
+    buildChannel,
+    /BUILD_CHANNEL_TTL_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
+  );
+  assert.match(buildChannel, /new WebSocket\(url\)/);
+  assert.match(buildChannel, /socketFactory\(BUILD_RELAY_URL\)/);
+  assert.match(buildChannel, /kind:\s*9007/);
+  assert.match(buildChannel, /\["visibility",\s*"open"\]/);
+  assert.match(buildChannel, /\["channel_type",\s*"stream"\]/);
+  assert.match(
+    buildChannel,
+    /\["ttl",\s*String\(BUILD_CHANNEL_TTL_SECONDS\)\]/,
+  );
+  assert.match(buildChannel, /kind:\s*9/);
+  assert.match(buildChannel, /content:\s*BUILD_INVITATION/);
+  assert.match(
+    buildChannel,
+    /You are invited to make a change to the Buzz Inside project\./,
+  );
+  assert.match(
+    buildChannel,
+    /socket\.send\(JSON\.stringify\(\["EVENT",\s*createEvent\]\)\)/,
+  );
+  assert.match(
+    buildChannel,
+    /socket\.send\(JSON\.stringify\(\["EVENT",\s*invitationEvent\]\)\)/,
+  );
+  assert.doesNotMatch(buildChannel, /kind:\s*9000/);
+  assert.match(page, /🐝 fix it in buzz/);
 });

@@ -997,10 +997,6 @@ export default function Home() {
 
           <div className="privacy-note">
             <p>no backend · no analytics · no DMs · read-only</p>
-            <p>
-              this app doesn&apos;t persist your nsec; it keeps it in this tab&apos;s
-              memory only to sign relay authentication events
-            </p>
           </div>
         </section>
       ) : (

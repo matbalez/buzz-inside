@@ -11,6 +11,7 @@ export type BuildPhase =
 export type BuildChannelResult = {
   channelId: string;
   channelName: string;
+  invitationEventId: string;
 };
 
 export type BuildSocket = {
@@ -28,6 +29,17 @@ export const BUILD_CHANNEL_TTL_SECONDS = 6 * 60 * 60;
 const BUILD_RELAY_TIMEOUT_MS = 30_000;
 export const BUILD_INVITATION =
   "You are invited to make a change to the Buzz Inside project. You should clone and fork the public <https://github.com/matbalez/buzz-inside/> repo. Add your agent and describe the change you would like to see to the site. When you’re happy with the change, ask your agent to open a PR against the main repo. Your change will be evaluated, merged and deployed automatically. Thank you for improving Buzz Inside!";
+
+export function buildChannelDeepLink({
+  channelId,
+  invitationEventId,
+}: Pick<BuildChannelResult, "channelId" | "invitationEventId">) {
+  const query = new URLSearchParams({
+    channel: channelId,
+    id: invitationEventId,
+  });
+  return `buzz://message?${query.toString()}`;
+}
 
 export function provisionBuildChannel(
   secretKey: Uint8Array,
@@ -75,7 +87,7 @@ export function provisionBuildChannel(
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ channelId, channelName });
+      resolve({ channelId, channelName, invitationEventId });
     }
 
     socket.onopen = () => onPhase("authenticating");

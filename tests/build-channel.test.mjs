@@ -5,6 +5,7 @@ import {
   BUILD_CHANNEL_TTL_SECONDS,
   BUILD_INVITATION,
   BUILD_RELAY_URL,
+  buildChannelDeepLink,
   provisionBuildChannel,
 } from "../app/build-channel.ts";
 
@@ -102,6 +103,11 @@ test("authenticates, creates the six-hour channel, and posts the invitation", as
   assert.equal(
     result.channelName,
     createEvent.tags.find((tag) => tag[0] === "name")[1],
+  );
+  assert.equal(result.invitationEventId, invitationEvent.id);
+  assert.equal(
+    buildChannelDeepLink(result),
+    `buzz://message?channel=${result.channelId}&id=${invitationEvent.id}`,
   );
   assert.deepEqual(phases, ["authenticating", "creating", "posting"]);
   assert.equal(sockets[0], socket);

@@ -10,7 +10,10 @@ import {
   useState,
 } from "react";
 import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
-import { provisionBuildChannel } from "./build-channel";
+import {
+  buildChannelDeepLink,
+  provisionBuildChannel,
+} from "./build-channel";
 import type {
   BuildChannelResult,
   BuildPhase,
@@ -239,6 +242,7 @@ export default function Home() {
 
   const socketRef = useRef<WebSocket | null>(null);
   const buildSocketRef = useRef<BuildSocket | null>(null);
+  const buildDialogRef = useRef<HTMLDialogElement | null>(null);
   const secretKeyRef = useRef<Uint8Array | undefined>(undefined);
   const authEventIdRef = useRef("");
   const identityRef = useRef("");
@@ -646,9 +650,7 @@ export default function Home() {
       );
       setBuildChannel(result);
       setBuildPhase("success");
-      setBuildStatus(
-        `created #${result.channelName} on Flint · archives after 6 hours idle`,
-      );
+      setBuildStatus("");
     } catch (caught) {
       setBuildPhase("error");
       setBuildStatus(
@@ -932,6 +934,17 @@ export default function Home() {
         : buildPhase === "posting"
           ? "posting the invitation…"
           : "";
+
+  useEffect(() => {
+    const dialog = buildDialogRef.current;
+    if (!dialog) return;
+
+    if (buildChannel && !dialog.open) {
+      dialog.showModal();
+    } else if (!buildChannel && dialog.open) {
+      dialog.close();
+    }
+  }, [buildChannel]);
 
   useEffect(() => {
     if (loadingResults) return;
@@ -1317,15 +1330,10 @@ export default function Home() {
               <span
                 className={buildPhase === "error" ? "build-error" : "quiet"}
                 role={buildPhase === "error" ? "alert" : "status"}
-                title={
-                  buildChannel ? `channel ${buildChannel.channelId}` : undefined
-                }
               >
                 {buildStatus || buildProgress}
               </span>
-            ) : (
-              <span className="quiet">build on Flint · 6-hour idle channel</span>
-            )}
+            ) : null}
             <button
               className="fix-button"
               type="button"
@@ -1338,6 +1346,41 @@ export default function Home() {
           </div>
         ) : null}
       </footer>
+      <dialog
+        aria-describedby="build-dialog-description"
+        aria-labelledby="build-dialog-title"
+        className="build-dialog"
+        onClose={() => setBuildChannel(null)}
+        ref={buildDialogRef}
+      >
+        {buildChannel ? (
+          <>
+            <div className="build-dialog-heading">
+              <p className="eyebrow">channel ready</p>
+              <button
+                aria-label="Close channel dialog"
+                className="text-button"
+                type="button"
+                onClick={() => buildDialogRef.current?.close()}
+              >
+                close
+              </button>
+            </div>
+            <h2 id="build-dialog-title">#{buildChannel.channelName}</h2>
+            <p id="build-dialog-description">
+              Your project invitation is waiting in Buzz. Open the app to start
+              building in this channel.
+            </p>
+            <a
+              autoFocus
+              className="build-dialog-link"
+              href={buildChannelDeepLink(buildChannel)}
+            >
+              open in Buzz →
+            </a>
+          </>
+        ) : null}
+      </dialog>
     </main>
   );
 }

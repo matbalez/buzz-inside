@@ -138,4 +138,12 @@ test("limits the opt-in write path to the Flint build-channel handshake", async 
   );
   assert.doesNotMatch(buildChannel, /kind:\s*9000/);
   assert.match(page, /🐝 fix it in buzz/);
+  assert.doesNotMatch(page, /build on Flint · 6-hour idle channel/);
+  assert.match(page, /className="build-dialog"/);
+  assert.match(page, /#\{buildChannel\.channelName\}/);
+  assert.match(page, /buildChannelDeepLink\(buildChannel\)/);
+  assert.match(
+    buildChannel,
+    /buzz:\/\/message\?\$\{query\.toString\(\)\}/,
+  );
 });

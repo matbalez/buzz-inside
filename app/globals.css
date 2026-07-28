@@ -535,6 +535,58 @@ h1 {
   opacity: 0.5;
 }
 
+.build-dialog {
+  width: min(520px, calc(100% - 32px));
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 24px;
+  box-shadow: 10px 10px 0 var(--ink);
+}
+
+.build-dialog::backdrop {
+  background: rgb(8 8 8 / 58%);
+}
+
+.build-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.build-dialog .eyebrow {
+  margin-bottom: 12px;
+}
+
+.build-dialog h2 {
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-size: clamp(22px, 5vw, 34px);
+  font-weight: 400;
+  letter-spacing: -0.045em;
+  line-height: 1.1;
+}
+
+.build-dialog > p {
+  max-width: 46ch;
+  margin: 22px 0;
+}
+
+.build-dialog-link {
+  display: inline-block;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  padding: 11px 16px;
+  text-decoration: none;
+}
+
+.build-dialog-link:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

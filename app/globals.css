@@ -32,6 +32,11 @@ main {
   flex-direction: column;
 }
 
+.session-shell {
+  height: 100vh;
+  overflow: hidden;
+}
+
 button,
 input,
 select {
@@ -69,6 +74,25 @@ a {
   gap: 24px;
   border-bottom: 1px solid var(--ink);
   padding: 0 22px;
+}
+
+.site-header.authenticated {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.site-header.authenticated .status-dot {
+  background: var(--paper);
+}
+
+.site-header.authenticated .status-dot.reconnecting {
+  background: transparent;
+  border-color: var(--paper);
+}
+
+.site-header.authenticated button:focus-visible,
+.site-header.authenticated a:focus-visible {
+  outline-color: var(--paper);
 }
 
 .relay-header {
@@ -219,6 +243,7 @@ h1 {
   min-height: 0;
   flex: 1;
   grid-template-columns: 240px minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .workspace:has(.thread) {
@@ -226,6 +251,9 @@ h1 {
 }
 
 .sidebar {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-right: 1px solid var(--ink);
   padding: 22px 16px;
 }
@@ -569,9 +597,11 @@ h1 {
   .workspace,
   .workspace:has(.thread) {
     display: block;
+    overflow: auto;
   }
 
   .sidebar {
+    overflow-y: visible;
     border-right: 0;
     border-bottom: 1px solid var(--ink);
     padding: 12px 14px;

@@ -930,7 +930,6 @@ export default function Home() {
 
       {!sessionReady ? (
         <section className="entry">
-          <p className="eyebrow">private workspace search</p>
           <h1>Look inside your Buzz.</h1>
           <p className="lede">
             Connect directly to your relay. Search everything you can already

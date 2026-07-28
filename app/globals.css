@@ -26,6 +26,12 @@ body {
   line-height: 1.55;
 }
 
+main {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+}
+
 button,
 input,
 select {
@@ -56,6 +62,7 @@ a {
 
 .site-header {
   display: flex;
+  flex: 0 0 auto;
   min-height: 58px;
   align-items: center;
   justify-content: space-between;
@@ -119,6 +126,7 @@ a {
 
 .entry {
   width: min(620px, calc(100% - 40px));
+  flex: 1;
   margin: clamp(64px, 12vh, 136px) auto 72px;
 }
 
@@ -208,7 +216,8 @@ h1 {
 
 .workspace {
   display: grid;
-  min-height: calc(100vh - 59px);
+  min-height: 0;
+  flex: 1;
   grid-template-columns: 240px minmax(0, 1fr);
 }
 
@@ -261,7 +270,7 @@ h1 {
 
 .content {
   display: flex;
-  height: calc(100vh - 59px);
+  min-height: 0;
   min-width: 0;
   flex-direction: column;
   overflow: hidden;
@@ -424,7 +433,7 @@ h1 {
 
 .thread {
   overflow: auto;
-  max-height: calc(100vh - 59px);
+  min-height: 0;
   border-left: 1px solid var(--ink);
   padding: 22px;
   position: sticky;
@@ -447,6 +456,55 @@ h1 {
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
   font-size: 11px;
+}
+
+.site-footer {
+  display: flex;
+  min-height: 55px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-top: 1px solid var(--ink);
+  padding: 9px 22px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.build-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+.build-footer > span {
+  overflow: hidden;
+  max-width: min(56vw, 720px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-error {
+  color: var(--danger);
+}
+
+.fix-button {
+  flex: 0 0 auto;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  padding: 7px 11px;
+}
+
+.fix-button:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.fix-button:disabled {
+  cursor: wait;
+  opacity: 0.5;
 }
 
 .sr-only {
@@ -540,8 +598,16 @@ h1 {
   }
 
   .content {
-    height: calc(100vh - 116px);
+    height: calc(100vh - 171px);
     padding: 16px 14px;
+  }
+
+  .site-footer {
+    padding: 9px 14px;
+  }
+
+  .build-footer > span {
+    display: none;
   }
 
   .filters {

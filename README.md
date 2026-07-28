@@ -41,7 +41,9 @@ before any write. For members, the browser signs a public NIP-29 stream-channel
 creation event with a six-hour idle TTL; the relay automatically makes the
 signer its owner/member. The browser then signs the project invitation as the
 channel's first message and closes the temporary connection after both writes
-are acknowledged.
+are acknowledged. Once complete, a dialog shows the new channel name and offers
+a `buzz://message` deep link that opens the channel at its project invitation in
+the local Buzz app.
 
 ## Local development
 

@@ -69,6 +69,36 @@ test("keeps relay browsing transient and read-only by construction", async () =>
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
 
+test("inverts the authenticated header and constrains the session panes", async () => {
+  const [page, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /sessionReady \? "session-shell" : undefined/);
+  assert.match(page, /sessionReady \? "site-header authenticated" : "site-header"/);
+  assert.match(
+    styles,
+    /\.session-shell\s*\{[^}]*height:\s*100vh;[^}]*overflow:\s*hidden;/s,
+  );
+  assert.match(
+    styles,
+    /\.site-header\.authenticated\s*\{[^}]*background:\s*var\(--ink\);[^}]*color:\s*var\(--paper\);/s,
+  );
+  assert.match(
+    styles,
+    /\.workspace\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+  );
+  assert.match(
+    styles,
+    /\.sidebar\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s,
+  );
+  assert.match(
+    styles,
+    /\.results\s*\{[^}]*flex:\s*1;[^}]*overflow-y:\s*auto;/s,
+  );
+});
+
 test("limits the opt-in write path to the Flint build-channel handshake", async () => {
   const [page, buildChannel] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

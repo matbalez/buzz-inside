@@ -956,8 +956,10 @@ export default function Home() {
   }, [feedMode, loadingResults, orderedVisibleEvents.length, selectedChannel]);
 
   return (
-    <main>
-      <header className="site-header">
+    <main className={sessionReady ? "session-shell" : undefined}>
+      <header
+        className={sessionReady ? "site-header authenticated" : "site-header"}
+      >
         <div className="relay-header">
           <a
             className="wordmark"

@@ -138,4 +138,7 @@ test("limits the opt-in write path to the Flint build-channel handshake", async 
   );
   assert.doesNotMatch(buildChannel, /kind:\s*9000/);
   assert.match(page, /🐝 fix it in buzz/);
+  assert.match(page, /id="build-status"/);
+  assert.match(page, /aria-busy=\{building\}/);
+  assert.match(page, /aria-describedby="build-status"/);
 });

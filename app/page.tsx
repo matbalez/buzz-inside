@@ -1315,6 +1315,7 @@ export default function Home() {
           <div className="build-footer">
             {buildStatus || buildProgress ? (
               <span
+                id="build-status"
                 className={buildPhase === "error" ? "build-error" : "quiet"}
                 role={buildPhase === "error" ? "alert" : "status"}
                 title={
@@ -1324,13 +1325,17 @@ export default function Home() {
                 {buildStatus || buildProgress}
               </span>
             ) : (
-              <span className="quiet">build on Flint · 6-hour idle channel</span>
+              <span id="build-status" className="quiet">
+                build on Flint · 6-hour idle channel
+              </span>
             )}
             <button
               className="fix-button"
               type="button"
               onClick={fixItInBuzz}
               disabled={building}
+              aria-busy={building}
+              aria-describedby="build-status"
               title="Create a public six-hour build channel on Flint"
             >
               🐝 fix it in buzz

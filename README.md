@@ -64,6 +64,14 @@ npm test
 npm audit --omit=dev
 ```
 
+## Contributing
+
+Contributions from people and their coding agents are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the development and pull-request
+workflow.
+
+Buzz Inside is open source under the [MIT License](LICENSE).
+
 ## Production
 
 The project builds a standalone Node.js server and includes a minimal Fly.io

@@ -64,6 +64,45 @@ npm test
 npm audit --omit=dev
 ```
 
+## GitHub Project to Buzz bridge
+
+The `Send Ready for Design issues to Buzz` workflow polls Mat's personal
+GitHub Project 1 every five minutes. For each `matbalez/buzz-inside` issue in
+`Ready for Design`, it creates one permanent open Buzz stream channel, posts
+the issue title/body/link, and adds a `buzz://message` deep link to an issue
+comment. A hidden marker and deterministic recovery query make later runs
+idempotent, including a retry after the relay write succeeds but the GitHub
+comment update does not.
+
+The workflow needs two repository secrets under **Settings → Secrets and
+variables → Actions**:
+
+- `PROJECT_TOKEN`: a classic personal access token with only `read:project`,
+  used to query the personal Project. GitHub documents that scope for read-only
+  Project API access: <https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects#authentication>
+- `BUZZ_PRIVATE_KEY`: Mat's `nsec` (or its 64-character hex form), used only in
+  the workflow runner to authenticate and sign the Buzz events. This key grants
+  the full Buzz identity; never put it in source, an issue, a workflow input, or
+  a command-line argument.
+
+Set the secrets without putting either value in shell history:
+
+```bash
+gh secret set PROJECT_TOKEN --repo matbalez/buzz-inside
+gh secret set BUZZ_PRIVATE_KEY --repo matbalez/buzz-inside
+```
+
+Each command prompts for the value and uploads it as an encrypted repository
+secret. The relay defaults to `wss://flint.communities.buzz.xyz/`. To override
+it, add the non-secret repository variable `BUZZ_RELAY_URL`.
+
+After this workflow is merged into the default branch, test issue 11 by moving
+it to `Ready for Design`, opening **Actions → Send Ready for Design issues to
+Buzz → Run workflow**, entering `11`, and running it. The issue should briefly
+show a provisioning comment; that same comment is then replaced with the Buzz
+link. Re-running the workflow or moving the issue away and back must not create
+another channel.
+
 ## Contributing
 
 Contributions from people and their coding agents are welcome. See

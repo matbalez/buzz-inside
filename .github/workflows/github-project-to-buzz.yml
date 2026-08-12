@@ -1,0 +1,50 @@
+name: Send Ready for Design issues to Buzz
+
+on:
+  schedule:
+    - cron: "3-59/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Optional issue number to process during a manual test
+        required: false
+        type: string
+
+concurrency:
+  group: github-project-to-buzz
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the bridge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: automation/package-lock.json
+
+      - name: Install bridge dependencies
+        run: npm ci --prefix automation --ignore-scripts --omit=dev
+
+      - name: Hand off Ready for Design issues
+        env:
+          BUZZ_PRIVATE_KEY: ${{ secrets.BUZZ_PRIVATE_KEY }}
+          BUZZ_RELAY_URL: ${{ vars.BUZZ_RELAY_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
+          PROJECT_NUMBER: "1"
+          PROJECT_OWNER: matbalez
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          TARGET_REPOSITORY: matbalez/buzz-inside
+          TARGET_STATUS: Ready for Design
+        run: npm run bridge:project

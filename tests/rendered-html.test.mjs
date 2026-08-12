@@ -23,7 +23,7 @@ async function render() {
   );
 }
 
-test("server-renders the Buzz Inside shell", async () => {
+test("server-renders the trending-channel shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -34,21 +34,18 @@ test("server-renders the Buzz Inside shell", async () => {
   assert.equal(response.headers.get("referrer-policy"), "no-referrer");
 
   const html = await response.text();
-  assert.match(html, /<title>Buzz Inside — private workspace search<\/title>/i);
-  assert.match(html, /Look inside your Buzz\./);
-  assert.match(
-    html,
-    /no backend · no analytics · no DMs · read-only browsing/i,
-  );
+  assert.match(html, /<title>Buzz Inside — where the buzz is<\/title>/i);
+  assert.match(html, /Where(?:&#x27;|')s the buzz\?/i);
+  assert.match(html, /no backend · no analytics · no DMs · read-only/i);
+  assert.match(html, /find the buzz →/i);
   assert.match(
     html,
     /href="https:\/\/github\.com\/matbalez\/buzz-inside"[^>]*>buzz inside is open source<\/a>/i,
   );
-  assert.doesNotMatch(html, /doesn(?:'|&#x27;)t persist your nsec/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
-test("keeps relay browsing transient and read-only by construction", async () => {
+test("keeps relay ranking transient and read-only by construction", async () => {
   const [page, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -60,90 +57,55 @@ test("keeps relay browsing transient and read-only by construction", async () =>
   assert.match(page, /socket\.send\(JSON\.stringify\(\["AUTH", authEvent\]\)\)/);
   assert.match(page, /RECONNECT_MAX_DELAY_MS\s*=\s*30_000/);
   assert.match(page, /channel\.type\s*!==\s*"dm"/);
-  assert.match(page, /"channel_created"/);
-  assert.match(page, /"member_joined"/);
+  assert.match(page, /rankChannels\(channels, trendEvents, now\)/);
+  assert.match(page, /rankActiveUsers\(channels, trendEvents, now\)/);
+  assert.match(page, /profiles\[user\.pubkey\]\?\.isAgent === false/);
+  assert.match(page, /safeProfile\(event\.content, event\.tags\)/);
+  assert.match(page, /SYSTEM_MESSAGE_KIND/);
+  assert.match(page, /"#h": \[id\]/);
+  assert.match(page, /limit:\s*maxLimitRef\.current/);
+  assert.match(page, /chunkItems\(filters, maxFiltersRef\.current\)/);
   assert.doesNotMatch(page, /localStorage|sessionStorage|indexedDB/);
-  assert.doesNotMatch(page, /kind:\s*(40002|45001|45003)/);
-  assert.match(layout, /Buzz Inside/);
+  assert.doesNotMatch(page, /finalizeEvent\([\s\S]*kind:\s*(9007|9)/);
+  assert.match(layout, /where the buzz is/);
   assert.match(packageJson, /"nostr-tools"/);
-  assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
 
-test("inverts the authenticated header and constrains the session panes", async () => {
+test("lays out a ranked board with a responsive channel detail pane", async () => {
   const [page, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /sessionReady \? "session-shell" : undefined/);
-  assert.match(page, /sessionReady \? "site-header authenticated" : "site-header"/);
+  assert.match(page, /className="trend-list"/);
+  assert.match(page, /className="people-panel"/);
+  assert.match(page, /Most active users/);
+  assert.match(page, /className="trend-name channel-name-link"/);
+  assert.match(page, /className="eyebrow channel-name-link"/);
+  assert.match(page, /<ul className="person-channels">/);
+  assert.match(page, /buzz:\/\/message\?/);
+  assert.match(page, /className="channel-detail"/);
+  assert.match(page, /\.sort\(\(a, b\) => a\.created_at - b\.created_at\)/);
+  assert.match(page, /ref=\{detailMessagesRef\}/);
+  assert.match(page, /recent messages · oldest → newest/);
+  assert.match(page, /how the ranking works/);
+  assert.match(page, /public · not joined/);
   assert.match(
     styles,
-    /\.session-shell\s*\{[^}]*height:\s*100vh;[^}]*overflow:\s*hidden;/s,
+    /\.trend-workspace\.with-detail\s*\{[^}]*grid-template-columns:/s,
   );
   assert.match(
     styles,
-    /\.site-header\.authenticated\s*\{[^}]*background:\s*var\(--ink\);[^}]*color:\s*var\(--paper\);/s,
+    /\.trend-list\s*\{[^}]*flex:\s*1;[^}]*overflow-y:\s*auto;/s,
   );
+  assert.match(styles, /\.membership\.discover\s*\{[^}]*var\(--signal\)/s);
   assert.match(
     styles,
-    /\.workspace\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+    /\.signal-grid\s*\{[^}]*grid-template-columns:/s,
   );
+  assert.match(styles, /\.person-channels\s*\{[^}]*display:\s*grid;/s);
   assert.match(
     styles,
-    /\.sidebar\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s,
-  );
-  assert.match(
-    styles,
-    /\.results\s*\{[^}]*flex:\s*1;[^}]*overflow-y:\s*auto;/s,
-  );
-});
-
-test("limits the opt-in write path to the Flint build-channel handshake", async () => {
-  const [page, buildChannel] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/build-channel.ts", import.meta.url), "utf8"),
-  ]);
-
-  assert.match(
-    buildChannel,
-    /BUILD_RELAY_URL\s*=\s*"wss:\/\/flint\.communities\.buzz\.xyz\/"/,
-  );
-  assert.match(
-    buildChannel,
-    /BUILD_CHANNEL_TTL_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
-  );
-  assert.match(buildChannel, /new WebSocket\(url\)/);
-  assert.match(buildChannel, /socketFactory\(BUILD_RELAY_URL\)/);
-  assert.match(buildChannel, /kind:\s*9007/);
-  assert.match(buildChannel, /\["visibility",\s*"open"\]/);
-  assert.match(buildChannel, /\["channel_type",\s*"stream"\]/);
-  assert.match(
-    buildChannel,
-    /\["ttl",\s*String\(BUILD_CHANNEL_TTL_SECONDS\)\]/,
-  );
-  assert.match(buildChannel, /kind:\s*9/);
-  assert.match(buildChannel, /content:\s*BUILD_INVITATION/);
-  assert.match(
-    buildChannel,
-    /You are invited to make a change to the Buzz Inside project\./,
-  );
-  assert.match(
-    buildChannel,
-    /socket\.send\(JSON\.stringify\(\["EVENT",\s*createEvent\]\)\)/,
-  );
-  assert.match(
-    buildChannel,
-    /socket\.send\(JSON\.stringify\(\["EVENT",\s*invitationEvent\]\)\)/,
-  );
-  assert.doesNotMatch(buildChannel, /kind:\s*9000/);
-  assert.match(page, /🐝 fix it in buzz/);
-  assert.doesNotMatch(page, /build on Flint · 6-hour idle channel/);
-  assert.match(page, /className="build-dialog"/);
-  assert.match(page, /#\{buildChannel\.channelName\}/);
-  assert.match(page, /buildChannelDeepLink\(buildChannel\)/);
-  assert.match(
-    buildChannel,
-    /buzz:\/\/message\?\$\{query\.toString\(\)\}/,
+    /\.detail-messages\s*\{[^}]*flex:\s*1;[^}]*overflow-y:\s*auto;/s,
   );
 });

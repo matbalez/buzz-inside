@@ -1,49 +1,45 @@
 # Buzz Inside
 
-Buzz Inside is a local-first, read-only browsing interface for private
-[Buzz](https://buzz.xyz) relays. It connects directly from the browser to a
-relay, authenticates with NIP-42, and lets an authorized member browse and
-search the channels their identity can access.
+Buzz Inside answers one question: **where is the buzz on this relay?**
 
-## What it does
+It connects directly from the browser to a [Buzz](https://buzz.xyz) relay,
+authenticates with NIP-42, and ranks the channels the current identity can
+read. The board includes joined channels and public channels the user has not
+joined yet; private channels appear only for their members, and DMs never
+appear.
 
-- discovers NIP-29 channels without including DMs
-- shows recent cross-channel activity
-- loads each channel at its newest activity and scrolls upward for history
-- searches relay content with NIP-50
-- shows channel creation and member-join events
-- keeps relay browsing and thread context read-only
-- automatically reconnects and re-authenticates after relay interruptions
-- lets a signed-in Flint member explicitly create a six-hour contribution
-  channel with a prewritten project invitation
+## How trending works
+
+- the browser requests up to seven days of message and channel activity per
+  visible channel, using the relay's advertised result ceiling
+- top-level posts, direct replies, and nested replies all count as messages
+- each message loses half its weight every 12 hours, so fresh activity rises
+- no more than three messages from one author in one hour count toward score
+- several active authors provide a small breadth bonus
+- recent member joins and newly created channels receive separate, decaying
+  discovery boosts without inflating the visible message total
+- raw 24-hour message and author counts remain visible beside the score
+- a public-channel leaderboard shows the most active users over 24 hours and
+  their top three channels; NIP-OA agent identities are excluded
+- channel names link directly to their latest activity in Buzz, and channel
+  previews read oldest-to-newest with the latest message at the bottom
+- ranking happens entirely in the current tab—there is no backend index
+
+The score is intentionally simple and visible in the UI so it can be tuned from
+real relay use instead of becoming a mysterious recommendation system.
 
 ## Security model
 
-- no application backend or analytics
-- no browser storage, cookies, or local database
-- no DMs; browsing relays never receive content writes
+- no application backend, analytics, browser storage, cookies, or local database
+- no DMs and no content writes
 - the nsec is decoded only in the current page's memory
-- key bytes sign NIP-42 authentication events and, only after the user presses
-  **fix it in buzz**, one channel-creation event and one invitation message
+- key bytes sign NIP-42 authentication events and nothing else
 - key bytes are overwritten when the session is cleared or the page closes
 - restrictive CSP, permissions, framing, referrer, and content-type headers
 
 The key remains in page memory for the life of an authenticated session so the
 app can reconnect without asking for it again. Use Buzz Inside only on a device,
 browser, identity, and relay you trust.
-
-## Building relay
-
-The relay being browsed and the building relay are intentionally independent.
-The **fix it in buzz** button always opens a separate temporary NIP-42
-connection to `wss://flint.communities.buzz.xyz/`. Non-members are rejected
-before any write. For members, the browser signs a public NIP-29 stream-channel
-creation event with a six-hour idle TTL; the relay automatically makes the
-signer its owner/member. The browser then signs the project invitation as the
-channel's first message and closes the temporary connection after both writes
-are acknowledged. Once complete, a dialog shows the new channel name and offers
-a `buzz://message` deep link that opens the channel at its project invitation in
-the local Buzz app.
 
 ## Local development
 

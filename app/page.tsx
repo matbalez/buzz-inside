@@ -2,7 +2,6 @@
 
 import {
   FormEvent,
-  ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -11,14 +10,18 @@ import {
 } from "react";
 import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 import {
-  buildChannelDeepLink,
-  provisionBuildChannel,
-} from "./build-channel";
-import type {
-  BuildChannelResult,
-  BuildPhase,
-  BuildSocket,
-} from "./build-channel";
+  chunkItems,
+  heatLabel,
+  isAgentProfileEvent,
+  isMessageEvent,
+  MESSAGE_EVENT_KINDS,
+  rankActiveUsers,
+  rankChannels,
+  SYSTEM_MESSAGE_KIND,
+  systemPayload,
+  TREND_LOOKBACK_SECONDS,
+} from "./trending";
+import type { ActiveUser, RankedChannel, TrendChannel } from "./trending";
 
 type Phase =
   | "idle"
@@ -40,12 +43,10 @@ type NostrEvent = {
 };
 
 type RelayInfo = {
-  name?: string;
-  description?: string;
-  pubkey?: string;
   supported_nips?: number[];
   limitation?: {
-    auth_required?: boolean;
+    max_filters?: number;
+    max_limit?: number;
   };
 };
 
@@ -54,38 +55,27 @@ type Profile = {
   display_name?: string;
   picture?: string;
   nip05?: string;
+  isAgent: boolean;
 };
 
-type Channel = {
-  id: string;
-  name: string;
-  about: string;
-  picture?: string;
-  type: string;
-  isPublic: boolean;
-  isOpen: boolean;
-  members: number;
-  admins: number;
+type Channel = TrendChannel & {
+  memberPubkeys: string[];
 };
 
-type FeedMode = "recent" | "search" | "happenings";
-type Visibility = "any" | "open" | "private";
+type BoardFilter = "all" | "joined" | "discover";
 
-type HappeningPayload = {
-  type?: string;
-  actor?: string;
-  target?: string;
-};
-
-const MESSAGE_KINDS = [9, 40002, 45001, 45003];
-const SYSTEM_MESSAGE_KIND = 40099;
-const CHANNEL_TIMELINE_KINDS = [...MESSAGE_KINDS, SYSTEM_MESSAGE_KIND];
 const CHANNEL_KINDS = [39000, 39001, 39002];
-const REQUIRED_NIPS = [29, 42, 50];
+const REQUIRED_NIPS = [29, 42];
 const RECONNECT_MAX_DELAY_MS = 30_000;
+const DEFAULT_MAX_FILTERS = 10;
+const DEFAULT_MAX_LIMIT = 1000;
 
 function getTag(event: NostrEvent, name: string) {
   return event.tags.find((tag) => tag[0] === name)?.[1];
+}
+
+function hasTag(event: NostrEvent, name: string) {
+  return event.tags.some((tag) => tag[0] === name);
 }
 
 function normalizeRelayUrl(value: string) {
@@ -96,13 +86,11 @@ function normalizeRelayUrl(value: string) {
     ? trimmed
     : `wss://${trimmed}`;
   const url = new URL(withProtocol);
-
   if (url.protocol === "https:") url.protocol = "wss:";
   if (url.protocol === "http:") url.protocol = "ws:";
   if (url.protocol !== "wss:" && url.protocol !== "ws:") {
     throw new Error("Relay URLs must use wss:// or ws://.");
   }
-
   url.hash = "";
   url.search = "";
   return url.toString();
@@ -118,7 +106,6 @@ function relayInfoUrls(relayUrl: string) {
 
 async function fetchRelayInfo(relayUrl: string) {
   let lastError: unknown;
-
   for (const url of relayInfoUrls(relayUrl)) {
     try {
       const response = await fetch(url, {
@@ -131,7 +118,6 @@ async function fetchRelayInfo(relayUrl: string) {
       lastError = error;
     }
   }
-
   throw lastError instanceof Error
     ? lastError
     : new Error("Could not read relay information.");
@@ -142,23 +128,31 @@ function decodeSecret(value: string) {
   if (!trimmed.startsWith("nsec1")) {
     throw new Error("Enter an nsec key for this controlled local prototype.");
   }
-
   const decoded = nip19.decode(trimmed);
   if (decoded.type !== "nsec") throw new Error("That is not a valid nsec.");
   return decoded.data;
 }
 
 function shortKey(value: string) {
-  if (!value) return "";
-  return `${value.slice(0, 8)}…${value.slice(-8)}`;
+  return value ? `${value.slice(0, 8)}…${value.slice(-8)}` : "";
 }
 
-function kindLabel(kind: number) {
-  if (kind === 9) return "message";
-  if (kind === 40002) return "channel";
-  if (kind === 45001) return "forum";
-  if (kind === 45003) return "comment";
-  return `kind ${kind}`;
+function safeProfile(content: string, tags: string[][]): Profile {
+  try {
+    const value = JSON.parse(content) as unknown;
+    return {
+      ...(value && typeof value === "object" ? (value as Omit<Profile, "isAgent">) : {}),
+      isAgent: isAgentProfileEvent(tags),
+    };
+  } catch {
+    return { isAgent: isAgentProfileEvent(tags) };
+  }
+}
+
+function upsertEvent(list: NostrEvent[], event: NostrEvent) {
+  const map = new Map(list.map((item) => [item.id, item]));
+  map.set(event.id, event);
+  return [...map.values()].sort((a, b) => b.created_at - a.created_at);
 }
 
 function timeLabel(timestamp: number) {
@@ -168,6 +162,15 @@ function timeLabel(timestamp: number) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(timestamp * 1000));
+}
+
+function relativeTime(timestamp: number | undefined, now: number) {
+  if (!timestamp) return "no recent activity";
+  const seconds = Math.max(0, now - timestamp);
+  if (seconds < 60) return "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
 function contentWithLinks(content: string) {
@@ -182,35 +185,13 @@ function contentWithLinks(content: string) {
   });
 }
 
-function safeProfile(content: string): Profile {
-  try {
-    const value = JSON.parse(content) as unknown;
-    return value && typeof value === "object" ? (value as Profile) : {};
-  } catch {
-    return {};
-  }
-}
-
-function happeningPayload(event: NostrEvent): HappeningPayload | null {
-  if (event.kind !== SYSTEM_MESSAGE_KIND) return null;
-  try {
-    const payload = JSON.parse(event.content) as HappeningPayload;
-    if (
-      payload.type !== "channel_created" &&
-      payload.type !== "member_joined"
-    ) {
-      return null;
-    }
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-function upsertEvent(list: NostrEvent[], event: NostrEvent) {
-  const map = new Map(list.map((item) => [item.id, item]));
-  map.set(event.id, event);
-  return [...map.values()].sort((a, b) => b.created_at - a.created_at);
+function channelDeepLink(channel: RankedChannel) {
+  if (!channel.deepLinkEvent) return "";
+  const query = new URLSearchParams({
+    channel: channel.id,
+    id: channel.deepLinkEvent.id,
+  });
+  return `buzz://message?${query.toString()}`;
 }
 
 export default function Home() {
@@ -222,31 +203,18 @@ export default function Home() {
   const [pubkey, setPubkey] = useState("");
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [channelEvents, setChannelEvents] = useState<NostrEvent[]>([]);
-  const [events, setEvents] = useState<NostrEvent[]>([]);
-  const [threadEvents, setThreadEvents] = useState<NostrEvent[]>([]);
-  const [selectedEvent, setSelectedEvent] = useState<NostrEvent | null>(null);
-  const [query, setQuery] = useState("");
-  const [selectedChannel, setSelectedChannel] = useState("all");
-  const [visibility, setVisibility] = useState<Visibility>("any");
-  const [author, setAuthor] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [feedMode, setFeedMode] = useState<FeedMode>("recent");
-  const [loadingResults, setLoadingResults] = useState(false);
+  const [trendEvents, setTrendEvents] = useState<NostrEvent[]>([]);
+  const [directoryReady, setDirectoryReady] = useState(false);
+  const [loadingTrends, setLoadingTrends] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
-  const [buildPhase, setBuildPhase] = useState<BuildPhase>("idle");
-  const [buildStatus, setBuildStatus] = useState("");
-  const [buildChannel, setBuildChannel] = useState<BuildChannelResult | null>(
-    null,
-  );
+  const [boardFilter, setBoardFilter] = useState<BoardFilter>("all");
+  const [selectedChannelId, setSelectedChannelId] = useState("");
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   const socketRef = useRef<WebSocket | null>(null);
-  const buildSocketRef = useRef<BuildSocket | null>(null);
-  const buildDialogRef = useRef<HTMLDialogElement | null>(null);
   const secretKeyRef = useRef<Uint8Array | undefined>(undefined);
   const authEventIdRef = useRef("");
   const identityRef = useRef("");
-  const activeSearchRef = useRef("");
   const shouldReconnectRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -256,13 +224,11 @@ export default function Home() {
   );
   const profileQueueRef = useRef(new Set<string>());
   const profileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const resultsRef = useRef<HTMLDivElement | null>(null);
-  const shouldScrollToBottomRef = useRef(false);
-  const nearBottomRef = useRef(true);
-  const preserveScrollRef = useRef<{
-    height: number;
-    top: number;
-  } | null>(null);
+  const trendRequestKeyRef = useRef("");
+  const maxFiltersRef = useRef(DEFAULT_MAX_FILTERS);
+  const maxLimitRef = useRef(DEFAULT_MAX_LIMIT);
+  const pendingTrendSubscriptionsRef = useRef(new Set<string>());
+  const detailMessagesRef = useRef<HTMLDivElement | null>(null);
 
   const send = useCallback((payload: unknown[]) => {
     const socket = socketRef.current;
@@ -313,92 +279,53 @@ export default function Home() {
     const socket = socketRef.current;
     socketRef.current = null;
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000);
-    const buildSocket = buildSocketRef.current;
-    buildSocketRef.current = null;
-    if (buildSocket && buildSocket.readyState < 2) {
-      buildSocket.close(1000);
-    }
     secretKeyRef.current?.fill(0);
     secretKeyRef.current = undefined;
     authEventIdRef.current = "";
     identityRef.current = "";
-    activeSearchRef.current = "";
     reconnectAttemptRef.current = 0;
-    preserveScrollRef.current = null;
-    shouldScrollToBottomRef.current = false;
-    nearBottomRef.current = true;
+    trendRequestKeyRef.current = "";
+    maxFiltersRef.current = DEFAULT_MAX_FILTERS;
+    maxLimitRef.current = DEFAULT_MAX_LIMIT;
+    pendingTrendSubscriptionsRef.current.clear();
     setSecretInput("");
     setRelayUrl("");
     setPubkey("");
     setProfiles({});
     setChannelEvents([]);
-    setEvents([]);
-    setThreadEvents([]);
-    setSelectedEvent(null);
-    setFeedMode("recent");
-    setLoadingResults(false);
+    setTrendEvents([]);
+    setDirectoryReady(false);
+    setLoadingTrends(false);
     setSessionReady(false);
-    setBuildPhase("idle");
-    setBuildStatus("");
-    setBuildChannel(null);
+    setBoardFilter("all");
+    setSelectedChannelId("");
     setError("");
     setPhase("idle");
   }, []);
 
   useEffect(() => clearSession, [clearSession]);
 
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setNow(Math.floor(Date.now() / 1000)),
+      60_000,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+
   const subscribeSessionData = useCallback(
     (identity: string) => {
+      trendRequestKeyRef.current = "";
+      pendingTrendSubscriptionsRef.current.clear();
+      setDirectoryReady(false);
       send(["REQ", "channels", { kinds: CHANNEL_KINDS, limit: 1000 }]);
       send([
         "REQ",
         "self-profile",
         { kinds: [0], authors: [identity], limit: 1 },
       ]);
-
-      if (feedMode === "happenings") {
-        send([
-          "REQ",
-          "happenings-view",
-          { kinds: [SYSTEM_MESSAGE_KIND], limit: 200 },
-        ]);
-      } else if (feedMode === "search" && query.trim()) {
-        const subscription = "search-view";
-        activeSearchRef.current = subscription;
-        const filter: Record<string, unknown> = {
-          kinds: MESSAGE_KINDS,
-          search: query.trim(),
-          limit: 100,
-        };
-        if (selectedChannel !== "all") filter["#h"] = [selectedChannel];
-        if (dateFrom) {
-          filter.since = Math.floor(
-            new Date(`${dateFrom}T00:00:00`).getTime() / 1000,
-          );
-        }
-        if (dateTo) {
-          filter.until = Math.floor(
-            new Date(`${dateTo}T23:59:59`).getTime() / 1000,
-          );
-        }
-        send(["REQ", subscription, filter]);
-      } else if (selectedChannel !== "all") {
-        send([
-          "REQ",
-          "channel-view",
-          {
-            kinds: CHANNEL_TIMELINE_KINDS,
-            "#h": [selectedChannel],
-            limit: 200,
-          },
-        ]);
-        shouldScrollToBottomRef.current = true;
-      } else {
-        send(["REQ", "recent-view", { kinds: MESSAGE_KINDS, limit: 75 }]);
-      }
-      setLoadingResults(true);
     },
-    [dateFrom, dateTo, feedMode, query, selectedChannel, send],
+    [send],
   );
 
   const handleRelayMessage = useCallback(
@@ -446,13 +373,12 @@ export default function Home() {
 
       if (message[0] === "EOSE") {
         const subscription = String(message[1] || "");
-        if (
-          subscription !== "channels" &&
-          subscription !== "self-profile" &&
-          !subscription.startsWith("profiles-") &&
-          !subscription.startsWith("thread-")
-        ) {
-          setLoadingResults(false);
+        if (subscription === "channels") setDirectoryReady(true);
+        if (subscription.startsWith("trending-view-")) {
+          pendingTrendSubscriptionsRef.current.delete(subscription);
+          if (!pendingTrendSubscriptionsRef.current.size) {
+            setLoadingTrends(false);
+          }
         }
         return;
       }
@@ -465,24 +391,26 @@ export default function Home() {
       if (event.kind === 0) {
         setProfiles((current) => ({
           ...current,
-          [event.pubkey]: safeProfile(event.content),
+          [event.pubkey]: safeProfile(event.content, event.tags),
         }));
         return;
       }
 
-      queueProfile(event.pubkey);
-      const happening = happeningPayload(event);
-      if (happening?.actor) queueProfile(happening.actor);
-      if (happening?.target) queueProfile(happening.target);
       if (subscription === "channels") {
         setChannelEvents((current) => upsertEvent(current, event));
-      } else if (subscription.startsWith("thread-")) {
-        setThreadEvents((current) => upsertEvent(current, event));
-      } else if (
-        MESSAGE_KINDS.includes(event.kind) ||
-        (event.kind === SYSTEM_MESSAGE_KIND && happening)
+        return;
+      }
+      if (
+        MESSAGE_EVENT_KINDS.includes(
+          event.kind as (typeof MESSAGE_EVENT_KINDS)[number],
+        ) ||
+        event.kind === SYSTEM_MESSAGE_KIND
       ) {
-        setEvents((current) => upsertEvent(current, event));
+        if (isMessageEvent(event)) queueProfile(event.pubkey);
+        const payload = systemPayload(event);
+        if (payload?.actor) queueProfile(payload.actor);
+        if (payload?.target) queueProfile(payload.target);
+        setTrendEvents((current) => upsertEvent(current, event));
       }
     },
     [queueProfile, subscribeSessionData],
@@ -509,9 +437,7 @@ export default function Home() {
       socket.onopen = () => {
         setPhase(reconnecting ? "reconnecting" : "authenticating");
       };
-      socket.onerror = () => {
-        setError("The relay connection failed. Retrying…");
-      };
+      socket.onerror = () => setError("The relay connection failed. Retrying…");
       socket.onclose = () => {
         if (challengeTimerRef.current !== null) {
           window.clearTimeout(challengeTimerRef.current);
@@ -569,7 +495,6 @@ export default function Home() {
           }
           return;
         }
-
         handleRelayMessage(message);
       };
     },
@@ -586,9 +511,8 @@ export default function Home() {
     setPhase("checking");
 
     let secretKey: Uint8Array | undefined;
-    let nextRelayUrl = "";
     try {
-      nextRelayUrl = normalizeRelayUrl(relayInput);
+      const nextRelayUrl = normalizeRelayUrl(relayInput);
       secretKey = decodeSecret(secretInput);
       const nextPubkey = getPublicKey(secretKey);
       const info = await fetchRelayInfo(nextRelayUrl);
@@ -599,6 +523,17 @@ export default function Home() {
           `This relay is missing required Buzz capabilities: NIP-${missing.join(", NIP-")}.`,
         );
       }
+
+      const advertisedMaxFilters = info.limitation?.max_filters;
+      maxFiltersRef.current =
+        typeof advertisedMaxFilters === "number" && advertisedMaxFilters > 0
+          ? Math.floor(advertisedMaxFilters)
+          : DEFAULT_MAX_FILTERS;
+      const advertisedMaxLimit = info.limitation?.max_limit;
+      maxLimitRef.current =
+        typeof advertisedMaxLimit === "number" && advertisedMaxLimit > 0
+          ? Math.floor(advertisedMaxLimit)
+          : DEFAULT_MAX_LIMIT;
 
       secretKeyRef.current?.fill(0);
       secretKeyRef.current = secretKey;
@@ -621,47 +556,7 @@ export default function Home() {
     }
   }
 
-  async function fixItInBuzz() {
-    if (buildSocketRef.current) return;
-    const secretKey = secretKeyRef.current;
-    if (!sessionReady || !secretKey) {
-      setBuildPhase("error");
-      setBuildStatus("Reconnect your identity before creating a build channel.");
-      return;
-    }
-
-    setBuildPhase("authenticating");
-    setBuildStatus("");
-    setBuildChannel(null);
-
-    let operationSocket: BuildSocket | null = null;
-    try {
-      const result = await provisionBuildChannel(
-        secretKey,
-        setBuildPhase,
-        (socket) => {
-          if (socket) {
-            operationSocket = socket;
-            buildSocketRef.current = socket;
-          } else if (buildSocketRef.current === operationSocket) {
-            buildSocketRef.current = null;
-          }
-        },
-      );
-      setBuildChannel(result);
-      setBuildPhase("success");
-      setBuildStatus("");
-    } catch (caught) {
-      setBuildPhase("error");
-      setBuildStatus(
-        caught instanceof Error
-          ? caught.message
-          : "Could not create the Flint build channel.",
-      );
-    }
-  }
-
-  const allChannels = useMemo(() => {
+  const channels = useMemo(() => {
     const map = new Map<string, Channel>();
     for (const event of [...channelEvents].reverse()) {
       const id = getTag(event, "d") || getTag(event, "h");
@@ -671,302 +566,139 @@ export default function Home() {
         name: id,
         about: "",
         type: "stream",
-        isPublic: false,
-        isOpen: false,
+        visibility: "open" as const,
+        isMember: false,
         members: 0,
-        admins: 0,
+        memberPubkeys: [],
+        archived: false,
       };
 
       if (event.kind === 39000) {
         current.name = getTag(event, "name") || current.name;
-        current.about = getTag(event, "about") || current.about;
-        current.picture = getTag(event, "picture") || current.picture;
-        current.type =
-          getTag(event, "t") || getTag(event, "channel_type") || current.type;
-        current.isPublic = event.tags.some((tag) => tag[0] === "public");
-        current.isOpen = event.tags.some((tag) => tag[0] === "open");
-      } else if (event.kind === 39001) {
-        current.admins = event.tags.filter((tag) => tag[0] === "p").length;
+        current.about =
+          getTag(event, "purpose") ||
+          getTag(event, "topic") ||
+          getTag(event, "about") ||
+          current.about;
+        current.type = getTag(event, "t") || current.type;
+        const visibility = getTag(event, "visibility");
+        current.visibility =
+          hasTag(event, "private") || visibility === "private"
+            ? "private"
+            : "open";
+        current.archived = getTag(event, "archived") === "true";
       } else if (event.kind === 39002) {
-        current.members = event.tags.filter((tag) => tag[0] === "p").length;
+        current.memberPubkeys = [
+          ...new Set(
+            event.tags
+              .filter((tag) => tag[0] === "p" && tag[1])
+              .map((tag) => tag[1]),
+          ),
+        ];
+        current.members = current.memberPubkeys.length;
       }
+      current.isMember = current.memberPubkeys.includes(pubkey);
       map.set(id, current);
     }
-    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [channelEvents]);
+    return [...map.values()].filter(
+      (channel) =>
+        channel.type !== "dm" &&
+        !channel.archived &&
+        (channel.isMember || channel.visibility === "open"),
+    );
+  }, [channelEvents, pubkey]);
 
-  const channels = useMemo(
-    () => allChannels.filter((channel) => channel.type !== "dm"),
-    [allChannels],
-  );
-
-  const channelMap = useMemo(
-    () => new Map(allChannels.map((channel) => [channel.id, channel])),
-    [allChannels],
-  );
-
-  const visibleEvents = useMemo(() => {
-    const authorNeedle = author.trim().toLowerCase();
-    return events.filter((event) => {
-      const channelId = getTag(event, "h") || "";
-      if (selectedChannel !== "all" && channelId !== selectedChannel) {
-        return false;
-      }
-      const channel = channelMap.get(channelId);
-      if (channel?.type === "dm") return false;
-      if (event.kind === SYSTEM_MESSAGE_KIND && !happeningPayload(event)) {
-        return false;
-      }
-      if (visibility === "open" && !channel?.isPublic) return false;
-      if (visibility === "private" && channel?.isPublic) return false;
-      if (authorNeedle) {
-        const profile = profiles[event.pubkey];
-        const haystack = [
-          event.pubkey,
-          profile?.display_name,
-          profile?.name,
-          profile?.nip05,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(authorNeedle)) return false;
-      }
-      return true;
+  useEffect(() => {
+    if (!sessionReady || !directoryReady || !channels.length) return;
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    const channelIds = channels.map((channel) => channel.id).sort();
+    const requestKey = channelIds.join(":");
+    if (trendRequestKeyRef.current === requestKey) return;
+    trendRequestKeyRef.current = requestKey;
+    setLoadingTrends(true);
+    const since = Math.floor(Date.now() / 1000) - TREND_LOOKBACK_SECONDS;
+    const filters = channelIds.flatMap((id) => [
+      {
+        kinds: [...MESSAGE_EVENT_KINDS],
+        "#h": [id],
+        since,
+        // Use the relay's advertised ceiling. The previous fixed 250-event cap
+        // truncated busy channels and made reply-inclusive 24h totals look low.
+        limit: maxLimitRef.current,
+      },
+      {
+        kinds: [SYSTEM_MESSAGE_KIND],
+        "#h": [id],
+        since,
+        // Keep discovery signals separate so a burst of joins cannot crowd
+        // conversational events out of a channel's message count.
+        limit: maxLimitRef.current,
+      },
+    ]);
+    const batches = chunkItems(filters, maxFiltersRef.current);
+    pendingTrendSubscriptionsRef.current = new Set(
+      batches.map((_, index) => `trending-view-${index}`),
+    );
+    batches.forEach((batch, index) => {
+      send(["REQ", `trending-view-${index}`, ...batch]);
     });
-  }, [
-    author,
-    channelMap,
-    events,
-    profiles,
-    selectedChannel,
-    visibility,
-  ]);
+  }, [channels, directoryReady, send, sessionReady]);
 
-  function runSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!query.trim()) return;
-    closeViewSubscriptions();
-    const previous = activeSearchRef.current;
-    if (previous) send(["CLOSE", previous]);
+  const rankedChannels = useMemo(
+    () => rankChannels(channels, trendEvents, now),
+    [channels, now, trendEvents],
+  );
+  const filteredChannels = useMemo(
+    () =>
+      rankedChannels.filter((channel) => {
+        if (boardFilter === "joined") return channel.isMember;
+        if (boardFilter === "discover") return !channel.isMember;
+        return true;
+      }),
+    [boardFilter, rankedChannels],
+  );
+  const activeUsers = useMemo(
+    () =>
+      rankActiveUsers(channels, trendEvents, now)
+        // Profiles arrive asynchronously. Require a loaded, positively human
+        // kind:0 profile so agents never flash into the leaderboard.
+        .filter((user) => profiles[user.pubkey]?.isAgent === false)
+        .slice(0, 12),
+    [channels, now, profiles, trendEvents],
+  );
+  const selectedChannel =
+    rankedChannels.find((channel) => channel.id === selectedChannelId) || null;
+  const selectedEvents = useMemo(
+    () =>
+      selectedChannel
+        ? trendEvents
+            .filter(
+              (event) =>
+                isMessageEvent(event) &&
+                getTag(event, "h") === selectedChannel.id,
+            )
+            .slice(0, 24)
+            .sort((a, b) => a.created_at - b.created_at)
+        : [],
+    [selectedChannel, trendEvents],
+  );
 
-    const subscription = "search-view";
-    activeSearchRef.current = subscription;
-    const filter: Record<string, unknown> = {
-      kinds: MESSAGE_KINDS,
-      search: query.trim(),
-      limit: 100,
-    };
-    if (selectedChannel !== "all") filter["#h"] = [selectedChannel];
-    if (dateFrom) {
-      filter.since = Math.floor(new Date(`${dateFrom}T00:00:00`).getTime() / 1000);
-    }
-    if (dateTo) {
-      filter.until = Math.floor(
-        new Date(`${dateTo}T23:59:59`).getTime() / 1000,
-      );
-    }
-    setEvents([]);
-    setSelectedEvent(null);
-    setThreadEvents([]);
-    setFeedMode("search");
-    setLoadingResults(true);
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      send(["REQ", subscription, filter]);
-    }
-  }
-
-  function closeActiveSearch() {
-    if (
-      activeSearchRef.current &&
-      socketRef.current?.readyState === WebSocket.OPEN
-    ) {
-      send(["CLOSE", activeSearchRef.current]);
-    }
-    activeSearchRef.current = "";
-  }
-
-  function closeViewSubscriptions() {
-    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
-    for (const subscription of [
-      "recent-view",
-      "happenings-view",
-      "channel-view",
-      "older-view",
-    ]) {
-      send(["CLOSE", subscription]);
-    }
-  }
-
-  function showRecent() {
-    closeViewSubscriptions();
-    closeActiveSearch();
-    setEvents([]);
-    setSelectedEvent(null);
-    setThreadEvents([]);
-    setSelectedChannel("all");
-    setFeedMode("recent");
-    setLoadingResults(true);
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      send(["REQ", "recent-view", { kinds: MESSAGE_KINDS, limit: 75 }]);
-    }
-  }
-
-  function showHappenings() {
-    closeViewSubscriptions();
-    closeActiveSearch();
-    setEvents([]);
-    setSelectedEvent(null);
-    setThreadEvents([]);
-    setSelectedChannel("all");
-    setFeedMode("happenings");
-    setLoadingResults(true);
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      send([
-        "REQ",
-        "happenings-view",
-        { kinds: [SYSTEM_MESSAGE_KIND], limit: 200 },
-      ]);
-    }
-  }
-
-  function showChannel(channelId: string) {
-    closeViewSubscriptions();
-    closeActiveSearch();
-    setEvents([]);
-    setSelectedEvent(null);
-    setThreadEvents([]);
-    setSelectedChannel(channelId);
-    setFeedMode("recent");
-    setLoadingResults(true);
-    nearBottomRef.current = true;
-    shouldScrollToBottomRef.current = true;
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      send([
-        "REQ",
-        "channel-view",
-        {
-          kinds: CHANNEL_TIMELINE_KINDS,
-          "#h": [channelId],
-          limit: 200,
-        },
-      ]);
-    }
-  }
-
-  function loadOlder() {
-    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
-    const oldest = events.at(-1)?.created_at;
-    if (!oldest) return;
-    const subscription = "older-view";
-    send(["CLOSE", subscription]);
-    setLoadingResults(true);
-    const filter: Record<string, unknown> = {
-      kinds: MESSAGE_KINDS,
-      until: oldest - 1,
-      limit: 75,
-    };
-    if (feedMode === "search") filter.search = query.trim();
-    if (selectedChannel !== "all") filter["#h"] = [selectedChannel];
-    if (feedMode === "happenings") filter.kinds = [SYSTEM_MESSAGE_KIND];
-    if (selectedChannel !== "all" && feedMode !== "search") {
-      filter.kinds = CHANNEL_TIMELINE_KINDS;
-      const node = resultsRef.current;
-      if (node) {
-        preserveScrollRef.current = {
-          height: node.scrollHeight,
-          top: node.scrollTop,
-        };
-      }
-    }
-    send(["REQ", subscription, filter]);
-  }
-
-  function openThread(event: NostrEvent) {
-    setSelectedEvent(event);
-    setThreadEvents([event]);
-    const markedRoot = event.tags.find(
-      (tag) => tag[0] === "e" && tag[3] === "root",
-    )?.[1];
-    const firstEventTag = event.tags.find((tag) => tag[0] === "e")?.[1];
-    const rootId = markedRoot || firstEventTag || event.id;
-    const subscription = `thread-${event.id.slice(0, 12)}`;
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      send([
-        "REQ",
-        subscription,
-        { ids: [...new Set([rootId, event.id])] },
-        { kinds: MESSAGE_KINDS, "#e": [rootId], limit: 200 },
-      ]);
-    }
-    window.history.pushState(null, "", `#${event.id}`);
-  }
+  useEffect(() => {
+    if (!selectedChannelId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const node = detailMessagesRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedChannelId]);
 
   const identityProfile = profiles[pubkey];
   const identityName =
     identityProfile?.display_name || identityProfile?.name || shortKey(pubkey);
   const relayDisplay = relayUrl.replace(/\/$/, "");
   const relayInfoUrl = relayUrl ? relayInfoUrls(relayUrl)[0] : "";
-  const orderedVisibleEvents = useMemo(
-    () =>
-      selectedChannel !== "all" && feedMode !== "search"
-        ? [...visibleEvents].sort((a, b) => a.created_at - b.created_at)
-        : visibleEvents,
-    [feedMode, selectedChannel, visibleEvents],
-  );
-  const viewTitle =
-    feedMode === "search"
-      ? "results"
-      : feedMode === "happenings"
-        ? "Channel happenings"
-        : selectedChannel === "all"
-          ? "Recent activity"
-          : `# ${channelMap.get(selectedChannel)?.name || selectedChannel}`;
-  const building =
-    buildPhase === "authenticating" ||
-    buildPhase === "creating" ||
-    buildPhase === "posting";
-  const buildProgress =
-    buildPhase === "authenticating"
-      ? "checking Flint membership…"
-      : buildPhase === "creating"
-        ? "creating a 6-hour channel…"
-        : buildPhase === "posting"
-          ? "posting the invitation…"
-          : "";
-
-  useEffect(() => {
-    const dialog = buildDialogRef.current;
-    if (!dialog) return;
-
-    if (buildChannel && !dialog.open) {
-      dialog.showModal();
-    } else if (!buildChannel && dialog.open) {
-      dialog.close();
-    }
-  }, [buildChannel]);
-
-  useEffect(() => {
-    if (loadingResults) return;
-    const node = resultsRef.current;
-    if (!node) return;
-
-    const preserved = preserveScrollRef.current;
-    if (preserved) {
-      node.scrollTop = node.scrollHeight - preserved.height + preserved.top;
-      preserveScrollRef.current = null;
-      return;
-    }
-
-    if (
-      selectedChannel !== "all" &&
-      feedMode !== "search" &&
-      (shouldScrollToBottomRef.current || nearBottomRef.current)
-    ) {
-      node.scrollTop = node.scrollHeight;
-      shouldScrollToBottomRef.current = false;
-    }
-  }, [feedMode, loadingResults, orderedVisibleEvents.length, selectedChannel]);
+  const joinedCount = rankedChannels.filter((channel) => channel.isMember).length;
+  const discoverCount = rankedChannels.length - joinedCount;
 
   return (
     <main className={sessionReady ? "session-shell" : undefined}>
@@ -974,21 +706,11 @@ export default function Home() {
         className={sessionReady ? "site-header authenticated" : "site-header"}
       >
         <div className="relay-header">
-          <a
-            className="wordmark"
-            href="#"
-            aria-label="Buzz Inside home"
-            onClick={(event) => {
-              if (!sessionReady) return;
-              event.preventDefault();
-              showRecent();
-              window.history.replaceState(null, "", window.location.pathname);
-            }}
-          >
+          <a className="wordmark" href="#" aria-label="Buzz Inside home">
             buzz inside
           </a>
           <span className="slash">/</span>
-          <span>read-only browsing</span>
+          <span>trending channels</span>
           {sessionReady ? (
             <>
               <span className="slash">/</span>
@@ -1019,10 +741,11 @@ export default function Home() {
 
       {!sessionReady ? (
         <section className="entry">
-          <h1>Look inside your Buzz.</h1>
+          <p className="eyebrow">live relay activity</p>
+          <h1>Where&apos;s the buzz?</h1>
           <p className="lede">
-            Connect directly to your relay. Search everything you can already
-            read. Your key and workspace content stay in this tab.
+            See which channels are moving right now—both the rooms you&apos;re in
+            and public ones you haven&apos;t discovered yet.
           </p>
 
           <form className="connect-form" onSubmit={connect}>
@@ -1068,7 +791,7 @@ export default function Home() {
               {phase === "connecting" && "connecting…"}
               {phase === "authenticating" && "authenticating…"}
               {phase === "reconnecting" && "reconnecting…"}
-              {(phase === "idle" || phase === "error") && "connect →"}
+              {(phase === "idle" || phase === "error") && "find the buzz →"}
             </button>
           </form>
 
@@ -1084,124 +807,30 @@ export default function Home() {
           ) : null}
 
           <div className="privacy-note">
-            <p>no backend · no analytics · no DMs · read-only browsing</p>
+            <p>no backend · no analytics · no DMs · read-only</p>
+            <p>
+              Activity is ranked in this tab from data your identity can already
+              read. Your key never leaves the browser.
+            </p>
           </div>
         </section>
       ) : (
-        <div className="workspace">
-          <aside className="sidebar">
-            <nav aria-label="Channels">
-              <div className="nav-heading">
-                <span>channels</span>
-                <span>{channels.length || "—"}</span>
-              </div>
-              <button
-                className={
-                  selectedChannel === "all" && feedMode === "recent"
-                    ? "channel active"
-                    : "channel"
-                }
-                type="button"
-                onClick={showRecent}
-              >
-                <span>Recent activity</span>
-              </button>
-              <button
-                className={feedMode === "happenings" ? "channel active" : "channel"}
-                type="button"
-                onClick={showHappenings}
-              >
-                <span>Channel happenings</span>
-              </button>
-              {channels.map((channel) => (
-                <button
-                  className={
-                    selectedChannel === channel.id ? "channel active" : "channel"
-                  }
-                  type="button"
-                  key={channel.id}
-                  onClick={() => showChannel(channel.id)}
-                  title={channel.about}
-                >
-                  <span># {channel.name}</span>
-                  <span className="visibility-mark">
-                    {channel.isPublic ? "open" : "private"}
-                  </span>
-                </button>
-              ))}
-            </nav>
-          </aside>
-
-          <section className="content">
-            <form className="search" onSubmit={runSearch}>
-              <div className="search-line">
-                <label className="sr-only" htmlFor="search">
-                  Search Buzz
-                </label>
-                <input
-                  id="search"
-                  type="search"
-                  placeholder="search your Buzz"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-                <button type="submit">search →</button>
-              </div>
-              <details>
-                <summary>filters</summary>
-                <div className="filters">
-                  <label>
-                    <span>visibility</span>
-                    <select
-                      value={visibility}
-                      onChange={(event) =>
-                        setVisibility(event.target.value as Visibility)
-                      }
-                    >
-                      <option value="any">any</option>
-                      <option value="open">open</option>
-                      <option value="private">private</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>author</span>
-                    <input
-                      type="text"
-                      placeholder="name or pubkey"
-                      value={author}
-                      onChange={(event) => setAuthor(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>from</span>
-                    <input
-                      type="date"
-                      value={dateFrom}
-                      onChange={(event) => setDateFrom(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>to</span>
-                    <input
-                      type="date"
-                      value={dateTo}
-                      onChange={(event) => setDateTo(event.target.value)}
-                    />
-                  </label>
-                </div>
-              </details>
-            </form>
-
-            <div className="result-heading">
+        <div className={selectedChannel ? "trend-workspace with-detail" : "trend-workspace"}>
+          <section className="trend-board" aria-labelledby="trend-title">
+            <div className="board-intro">
               <div>
-                <span>{viewTitle}</span>
-                <span className="quiet"> {orderedVisibleEvents.length}</span>
+                <p className="eyebrow">live relay signal · past 24 hours</p>
+                <div className="board-title-line">
+                  <h1 id="trend-title">Where&apos;s the buzz?</h1>
+                  <p className="board-lede">
+                    Messages, replies, new joins, and newly created channels.
+                  </p>
+                </div>
               </div>
-              {feedMode === "search" ? (
-                <button className="text-button" type="button" onClick={showRecent}>
-                  show recent
-                </button>
-              ) : null}
+              <div className="board-summary" aria-label="Channel totals">
+                <span>{joinedCount} joined</span>
+                <span>{discoverCount} to discover</span>
+              </div>
             </div>
 
             {error ? (
@@ -1210,113 +839,158 @@ export default function Home() {
               </p>
             ) : null}
 
-            <div
-              className="results"
-              aria-live="polite"
-              aria-busy={loadingResults}
-              ref={resultsRef}
-              onScroll={(event) => {
-                const node = event.currentTarget;
-                nearBottomRef.current =
-                  node.scrollHeight - node.scrollTop - node.clientHeight < 48;
-              }}
-            >
-              {events.length && selectedChannel !== "all" ? (
-                <button
-                  className="load-more"
-                  type="button"
-                  onClick={loadOlder}
-                  disabled={loadingResults}
-                >
-                  load older
-                </button>
-              ) : null}
-              {!orderedVisibleEvents.length && !loadingResults ? (
-                <div className="empty">
-                  <p>
-                    {feedMode === "happenings"
-                      ? "No channel happenings found."
-                      : "No matching messages."}
-                  </p>
-                  {feedMode !== "happenings" ? (
-                    <p>Try another query or loosen the filters.</p>
-                  ) : null}
+            <div className="signal-grid">
+              <section className="channel-panel" aria-label="Trending channels">
+                <div className="board-toolbar">
+                  <div className="filter-tabs" aria-label="Filter channels">
+                    {(["all", "joined", "discover"] as BoardFilter[]).map((filter) => (
+                      <button
+                        className={boardFilter === filter ? "filter-tab active" : "filter-tab"}
+                        key={filter}
+                        type="button"
+                        onClick={() => setBoardFilter(filter)}
+                      >
+                        {filter}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="quiet">
+                    {loadingTrends ? "reading the relay…" : "updates live"}
+                  </span>
                 </div>
-              ) : null}
-              {orderedVisibleEvents.map((event) => {
-                const channel = channelMap.get(getTag(event, "h") || "");
-                const happening = happeningPayload(event);
-                return happening ? (
-                  <Happening
-                    key={event.id}
-                    event={event}
-                    payload={happening}
-                    channel={channel}
-                    profiles={profiles}
-                    onSelectChannel={showChannel}
-                  />
-                ) : (
-                  <Message
-                    key={event.id}
-                    event={event}
-                    channel={channel}
-                    profile={profiles[event.pubkey]}
-                    selected={selectedEvent?.id === event.id}
-                    onOpen={() => openThread(event)}
-                  />
-                );
-              })}
-              {loadingResults ? <p className="loading">reading relay…</p> : null}
-              {events.length && selectedChannel === "all" ? (
-                <button
-                  className="load-more"
-                  type="button"
-                  onClick={loadOlder}
-                  disabled={loadingResults}
-                >
-                  load older
-                </button>
-              ) : null}
+
+                <div className="trend-list" aria-live="polite" aria-busy={loadingTrends}>
+                  {!filteredChannels.length && !loadingTrends ? (
+                    <div className="empty">
+                      <p>No channels match this view.</p>
+                    </div>
+                  ) : null}
+                  {filteredChannels.map((channel, index) => (
+                    <TrendRow
+                      channel={channel}
+                      index={rankedChannels.indexOf(channel) + 1 || index + 1}
+                      key={channel.id}
+                      now={now}
+                      selected={channel.id === selectedChannelId}
+                      onSelect={() =>
+                        setSelectedChannelId((current) =>
+                          current === channel.id ? "" : channel.id,
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+
+                <details className="score-note">
+                  <summary>how the ranking works</summary>
+                  <p>
+                    Every top-level post and nested reply counts. Messages lose
+                    half their weight every 12 hours; one-author floods are
+                    damped, while more voices add a small lift. Recent joins and
+                    channel creation add separate, decaying discovery boosts.
+                    Public and joined private channels are ranked; DMs are never
+                    included.
+                  </p>
+                </details>
+              </section>
+
+              <ActiveUsersPanel
+                channels={rankedChannels}
+                users={activeUsers}
+                profiles={profiles}
+                loading={loadingTrends}
+              />
             </div>
           </section>
 
-          {selectedEvent ? (
-            <aside className="thread" aria-label="Thread context">
-              <div className="thread-header">
-                <span>thread</span>
+          {selectedChannel ? (
+            <aside className="channel-detail" aria-label={`${selectedChannel.name} details`}>
+              <div className="detail-heading">
+                {channelDeepLink(selectedChannel) ? (
+                  <a
+                    className="eyebrow channel-name-link"
+                    href={channelDeepLink(selectedChannel)}
+                  >
+                    #{selectedChannel.name}
+                  </a>
+                ) : (
+                  <span className="eyebrow">#{selectedChannel.name}</span>
+                )}
                 <button
                   className="text-button"
                   type="button"
-                  onClick={() => {
-                    setSelectedEvent(null);
-                    setThreadEvents([]);
-                    window.history.replaceState(
-                      null,
-                      "",
-                      window.location.pathname,
-                    );
-                  }}
+                  onClick={() => setSelectedChannelId("")}
                 >
                   close
                 </button>
               </div>
-              {threadEvents
-                .slice()
-                .sort((a, b) => a.created_at - b.created_at)
-                .map((event) => (
-                  <Message
-                    compact
-                    key={event.id}
-                    event={event}
-                    channel={channelMap.get(getTag(event, "h") || "")}
-                    profile={profiles[event.pubkey]}
-                  />
-                ))}
+              <div className="detail-status">
+                <span className={selectedChannel.isMember ? "membership joined" : "membership discover"}>
+                  {selectedChannel.isMember ? "joined" : "public · not joined"}
+                </span>
+                <span>{selectedChannel.members} members</span>
+              </div>
+              {selectedChannel.about ? (
+                <p className="detail-about">{selectedChannel.about}</p>
+              ) : null}
+              <dl className="detail-stats">
+                <div>
+                  <dt>last 24h</dt>
+                  <dd>{selectedChannel.messages24h} messages</dd>
+                </div>
+                <div>
+                  <dt>voices</dt>
+                  <dd>{selectedChannel.voices24h}</dd>
+                </div>
+                <div>
+                  <dt>last post</dt>
+                  <dd>{relativeTime(selectedChannel.latestEvent?.created_at, now)}</dd>
+                </div>
+                <div>
+                  <dt>new joins</dt>
+                  <dd>{selectedChannel.joins24h} / 24h</dd>
+                </div>
+              </dl>
+
+              <div className="detail-section-heading">
+                recent messages · oldest → newest
+              </div>
+              <div className="detail-messages" ref={detailMessagesRef}>
+                {selectedEvents.length ? (
+                  selectedEvents.map((event) => (
+                    <article className="detail-message" key={event.id}>
+                      <div className="message-meta">
+                        <span className="author">
+                          {profiles[event.pubkey]?.display_name ||
+                            profiles[event.pubkey]?.name ||
+                            shortKey(event.pubkey)}
+                        </span>
+                        <time dateTime={new Date(event.created_at * 1000).toISOString()}>
+                          {timeLabel(event.created_at)}
+                        </time>
+                      </div>
+                      <div className="message-body">
+                        {contentWithLinks(event.content)}
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <p className="quiet">No messages in the seven-day window.</p>
+                )}
+              </div>
+
+              {channelDeepLink(selectedChannel) ? (
+                <a className="buzz-link" href={channelDeepLink(selectedChannel)}>
+                  open latest in Buzz →
+                </a>
+              ) : null}
             </aside>
           ) : null}
         </div>
       )}
+
       <footer className="site-footer">
+        <span>local ranking · no backend</span>
         <a
           href="https://github.com/matbalez/buzz-inside"
           target="_blank"
@@ -1324,156 +998,131 @@ export default function Home() {
         >
           buzz inside is open source
         </a>
-        {sessionReady ? (
-          <div className="build-footer">
-            {buildStatus || buildProgress ? (
-              <span
-                className={buildPhase === "error" ? "build-error" : "quiet"}
-                role={buildPhase === "error" ? "alert" : "status"}
-              >
-                {buildStatus || buildProgress}
-              </span>
-            ) : null}
-            <button
-              className="fix-button"
-              type="button"
-              onClick={fixItInBuzz}
-              disabled={building}
-              title="Create a public six-hour build channel on Flint"
-            >
-              🐝 fix it in buzz
-            </button>
-          </div>
-        ) : null}
       </footer>
-      <dialog
-        aria-describedby="build-dialog-description"
-        aria-labelledby="build-dialog-title"
-        className="build-dialog"
-        onClose={() => setBuildChannel(null)}
-        ref={buildDialogRef}
-      >
-        {buildChannel ? (
-          <>
-            <div className="build-dialog-heading">
-              <p className="eyebrow">channel ready</p>
-              <button
-                aria-label="Close channel dialog"
-                className="text-button"
-                type="button"
-                onClick={() => buildDialogRef.current?.close()}
-              >
-                close
-              </button>
-            </div>
-            <h2 id="build-dialog-title">#{buildChannel.channelName}</h2>
-            <p id="build-dialog-description">
-              Your project invitation is waiting in Buzz. Open the app to start
-              building in this channel.
-            </p>
-            <a
-              autoFocus
-              className="build-dialog-link"
-              href={buildChannelDeepLink(buildChannel)}
-            >
-              open in Buzz →
-            </a>
-          </>
-        ) : null}
-      </dialog>
     </main>
   );
 }
 
-function Happening({
-  event,
-  payload,
+function TrendRow({
   channel,
-  profiles,
-  onSelectChannel,
+  index,
+  now,
+  selected,
+  onSelect,
 }: {
-  event: NostrEvent;
-  payload: HappeningPayload;
-  channel?: Channel;
-  profiles: Record<string, Profile>;
-  onSelectChannel: (channelId: string) => void;
+  channel: RankedChannel;
+  index: number;
+  now: number;
+  selected: boolean;
+  onSelect: () => void;
 }) {
-  const subject =
-    payload.type === "member_joined"
-      ? payload.target || payload.actor || ""
-      : payload.actor || "";
-  const profile = profiles[subject];
-  const name =
-    profile?.display_name || profile?.name || shortKey(subject) || "Someone";
-  const action =
-    payload.type === "channel_created" ? "created" : "joined";
-
+  const link = channelDeepLink(channel);
   return (
-    <article className="message happening">
-      <div className="message-meta">
-        <time dateTime={new Date(event.created_at * 1000).toISOString()}>
-          {timeLabel(event.created_at)}
-        </time>
-      </div>
-      <div className="message-body">
-        <span className="author">{name}</span> {action}{" "}
-        {channel ? (
-          <button
-            className="channel-link"
-            type="button"
-            onClick={() => onSelectChannel(channel.id)}
-          >
+    <div className={selected ? "trend-row selected" : "trend-row"}>
+      <button
+        aria-expanded={selected}
+        aria-label={`Preview ${channel.name}`}
+        className="trend-row-hit"
+        type="button"
+        onClick={onSelect}
+      />
+      <span className="trend-rank">{String(index).padStart(2, "0")}</span>
+      <span className="trend-channel">
+        {link ? (
+          <a className="trend-name channel-name-link" href={link}>
             # {channel.name}
-          </button>
+          </a>
         ) : (
-          <span># {getTag(event, "h") || "channel"}</span>
+          <span className="trend-name"># {channel.name}</span>
         )}
-      </div>
-    </article>
+        <span className="trend-about">
+          {channel.about || `${channel.members} member channel`}
+        </span>
+      </span>
+      <span className="trend-signal">
+        <span className="heat-track" aria-hidden="true">
+          <span style={{ width: `${channel.relativeHeat}%` }} />
+        </span>
+        <span className="heat-label">
+          {heatLabel(channel)}
+          {channel.createdAt ? " · new" : ""}
+        </span>
+      </span>
+      <span className="trend-metrics">
+        <span>{channel.messages24h} msgs / 24h</span>
+        <span>
+          {channel.voices24h} voices
+          {channel.joins24h ? ` · +${channel.joins24h} joined` : ""}
+        </span>
+        <span>{relativeTime(channel.lastActivityAt, now)}</span>
+      </span>
+      <span className={channel.isMember ? "membership joined" : "membership discover"}>
+        {channel.isMember ? "joined" : "discover"}
+      </span>
+      <span className="row-arrow" aria-hidden="true">→</span>
+    </div>
   );
 }
 
-function Message({
-  event,
-  channel,
-  profile,
-  selected = false,
-  compact = false,
-  onOpen,
+function ActiveUsersPanel({
+  channels,
+  users,
+  profiles,
+  loading,
 }: {
-  event: NostrEvent;
-  channel?: Channel;
-  profile?: Profile;
-  selected?: boolean;
-  compact?: boolean;
-  onOpen?: () => void;
+  channels: RankedChannel[];
+  users: ActiveUser[];
+  profiles: Record<string, Profile>;
+  loading: boolean;
 }) {
-  const name = profile?.display_name || profile?.name || shortKey(event.pubkey);
-  const body: ReactNode = contentWithLinks(event.content);
   return (
-    <article
-      className={[
-        "message",
-        selected ? "selected" : "",
-        compact ? "compact" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      <div className="message-meta">
-        <span className="author">{name}</span>
-        <span>{channel ? `# ${channel.name}` : "workspace"}</span>
-        <span>{kindLabel(event.kind)}</span>
-        <time dateTime={new Date(event.created_at * 1000).toISOString()}>
-          {timeLabel(event.created_at)}
-        </time>
+    <aside className="people-panel" aria-labelledby="active-users-title">
+      <div className="people-heading">
+        <div>
+          <p className="eyebrow">public channels · past 24h</p>
+          <h2 id="active-users-title">Most active users</h2>
+        </div>
+        <span>{users.length ? `top ${users.length}` : "—"}</span>
       </div>
-      <div className="message-body">{body}</div>
-      {onOpen ? (
-        <button className="thread-link" type="button" onClick={onOpen}>
-          context →
-        </button>
-      ) : null}
-    </article>
+      <div className="people-list" aria-live="polite" aria-busy={loading}>
+        {!users.length && !loading ? (
+          <p className="quiet">No public-channel messages in this window.</p>
+        ) : null}
+        {users.map((user, index) => {
+          const profile = profiles[user.pubkey];
+          const name =
+            profile?.display_name || profile?.name || shortKey(user.pubkey);
+          return (
+            <article className="person-row" key={user.pubkey}>
+              <span className="person-rank">{String(index + 1).padStart(2, "0")}</span>
+              <div className="person-main">
+                <div className="person-name-line">
+                  <strong>{name}</strong>
+                  <span>{user.messages24h} msgs</span>
+                </div>
+                <ul className="person-channels">
+                  {user.topChannels.map((channel) => {
+                    const ranked = channels.find((item) => item.id === channel.id);
+                    const link = ranked ? channelDeepLink(ranked) : "";
+                    return (
+                      <li key={channel.id}>
+                        {link ? (
+                          <a className="channel-name-link" href={link}>
+                            #{channel.name}
+                          </a>
+                        ) : (
+                          <span>#{channel.name}</span>
+                        )}{" "}
+                        <b>{channel.messages}</b>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </aside>
   );
 }

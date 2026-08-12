@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
-const title = "Buzz Inside — private workspace search";
+const title = "Buzz Inside — where the buzz is";
 const description =
-  "A local-first, read-only browser for searching everything your Buzz identity can access.";
+  "A local-first view of the channels trending on your Buzz relay.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

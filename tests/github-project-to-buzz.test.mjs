@@ -17,11 +17,17 @@ import {
 } from "../automation/github-project-to-buzz.mjs";
 
 class FakeSocket {
-  readyState = 1;
+  readyState = 0;
+  onopen = null;
   onerror = null;
   onclose = null;
   onmessage = null;
   sent = [];
+
+  open() {
+    this.readyState = 1;
+    this.onopen?.();
+  }
 
   receive(message) {
     this.onmessage?.({ data: JSON.stringify(message) });
@@ -165,8 +171,10 @@ test("authenticates, checks for a prior seed, creates a channel, and posts the i
     secretKey,
     socketFactory: () => socket,
     now: () => 1_800_000_000,
+    logger: () => {},
   });
 
+  socket.open();
   socket.receive(["AUTH", "challenge"]);
   const [authCommand, authEvent] = socket.sent[0];
   assert.equal(authCommand, "AUTH");
@@ -231,8 +239,10 @@ test("recovers a seed message after a previous run stopped before updating GitHu
     channelId,
     secretKey,
     socketFactory: () => socket,
+    logger: () => {},
   });
 
+  socket.open();
   socket.receive(["AUTH", "challenge"]);
   const authEvent = socket.sent[0][1];
   socket.receive(["OK", authEvent.id, true, ""]);
@@ -247,6 +257,71 @@ test("recovers a seed message after a previous run stopped before updating GitHu
     recovered: true,
   });
   assert.equal(socket.sent.filter(([command]) => command === "EVENT").length, 0);
+});
+
+test("continues with the reserved channel when the recovery query does not finish", async () => {
+  const socket = new FakeSocket();
+  const logs = [];
+  const secretKey = testSecret();
+  const target = issue({ title: "test issue" });
+  const channelId = "11111111-1111-4111-8111-111111111111";
+  const promise = publishIssueToBuzz({
+    issue: target,
+    channelId,
+    secretKey,
+    socketFactory: () => socket,
+    recoveryQueryTimeoutMs: 5,
+    writeTimeoutMs: 1_000,
+    logger: (message) => logs.push(message),
+  });
+
+  socket.open();
+  socket.receive(["AUTH", "challenge"]);
+  const authEvent = socket.sent[0][1];
+  socket.receive(["OK", authEvent.id, true, ""]);
+  const subscriptionId = socket.sent[1][1];
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(socket.sent[2], ["CLOSE", subscriptionId]);
+  const createEvent = socket.sent[3][1];
+  assert.equal(createEvent.kind, 9007);
+  assert.ok(logs.some((message) => message.includes("recovery query did not finish")));
+
+  socket.receive(["OK", createEvent.id, true, ""]);
+  const seedEvent = socket.sent[4][1];
+  socket.receive(["OK", seedEvent.id, true, ""]);
+  assert.equal((await promise).messageId, seedEvent.id);
+});
+
+test("reports a connection timeout at the exact relay phase", async () => {
+  const socket = new FakeSocket();
+  const promise = publishIssueToBuzz({
+    issue: issue({ title: "test issue" }),
+    channelId: "11111111-1111-4111-8111-111111111111",
+    secretKey: testSecret(),
+    socketFactory: () => socket,
+    connectTimeoutMs: 5,
+    logger: () => {},
+  });
+
+  await assert.rejects(promise, /connection did not open within 5ms/i);
+  assert.equal(socket.readyState, 3);
+});
+
+test("reports a missing authentication challenge at the exact relay phase", async () => {
+  const socket = new FakeSocket();
+  const promise = publishIssueToBuzz({
+    issue: issue({ title: "test issue" }),
+    channelId: "11111111-1111-4111-8111-111111111111",
+    secretKey: testSecret(),
+    socketFactory: () => socket,
+    authTimeoutMs: 5,
+    logger: () => {},
+  });
+
+  socket.open();
+  await assert.rejects(promise, /did not issue an authentication challenge within 5ms/i);
+  assert.equal(socket.readyState, 3);
 });
 
 test("reserves one issue comment and replaces it with the Buzz link", async () => {

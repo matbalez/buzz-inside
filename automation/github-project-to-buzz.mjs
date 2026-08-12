@@ -6,7 +6,10 @@ import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 export const DEFAULT_RELAY_URL = "wss://flint.communities.buzz.xyz/";
 export const DEFAULT_TARGET_STATUS = "Ready for Design";
 export const MARKER_PREFIX = "buzz-project-to-buzz:v1";
-const RELAY_TIMEOUT_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 10_000;
+const AUTH_TIMEOUT_MS = 10_000;
+const RECOVERY_QUERY_TIMEOUT_MS = 5_000;
+const WRITE_TIMEOUT_MS = 15_000;
 const MAX_MESSAGE_BYTES = 60_000;
 const MARKER_PATTERN = new RegExp(
   `<!-- ${MARKER_PREFIX} state=(pending|retry|ready) channel=([0-9a-f-]{36})(?: message=([0-9a-f]{64}))? -->`,
@@ -271,8 +274,12 @@ export function publishIssueToBuzz({
   secretKey,
   relayUrl = DEFAULT_RELAY_URL,
   socketFactory = (url) => new WebSocket(url),
-  timeoutMs = RELAY_TIMEOUT_MS,
+  connectTimeoutMs = CONNECT_TIMEOUT_MS,
+  authTimeoutMs = AUTH_TIMEOUT_MS,
+  recoveryQueryTimeoutMs = RECOVERY_QUERY_TIMEOUT_MS,
+  writeTimeoutMs = WRITE_TIMEOUT_MS,
   now = () => Math.floor(Date.now() / 1000),
+  logger = console.log,
 }) {
   const channelName = normalizeChannelName(issue);
   const author = getPublicKey(secretKey);
@@ -285,15 +292,18 @@ export function publishIssueToBuzz({
     let seedEventId = "";
     let existingMessageId = "";
     let queryFinished = false;
+    let phase = "connecting";
+    let timer = null;
     const subscriptionId = `github-issue-${issue.number}-${channelId.slice(0, 8)}`;
-    const timer = globalThis.setTimeout(
-      () => fail("The Buzz relay did not finish in time."),
-      timeoutMs,
-    );
 
     function cleanup() {
-      globalThis.clearTimeout(timer);
+      if (timer !== null) globalThis.clearTimeout(timer);
       if (socket.readyState < 2) socket.close(1000);
+    }
+
+    function armTimeout(timeoutMs, reason, onTimeout = fail) {
+      if (timer !== null) globalThis.clearTimeout(timer);
+      timer = globalThis.setTimeout(() => onTimeout(reason), timeoutMs);
     }
 
     function fail(reason) {
@@ -311,6 +321,8 @@ export function publishIssueToBuzz({
     }
 
     function sendCreateChannel() {
+      phase = "creating the channel";
+      logger("Buzz relay: creating the reserved channel.");
       const event = finalizeEvent(
         {
           kind: 9007,
@@ -327,9 +339,15 @@ export function publishIssueToBuzz({
       );
       createEventId = event.id;
       socket.send(JSON.stringify(["EVENT", event]));
+      armTimeout(
+        writeTimeoutMs,
+        `The Buzz relay did not confirm channel creation within ${writeTimeoutMs}ms.`,
+      );
     }
 
     function sendSeedMessage() {
+      phase = "posting the issue";
+      logger("Buzz relay: posting the issue to the channel.");
       const event = finalizeEvent(
         {
           kind: 9,
@@ -344,11 +362,48 @@ export function publishIssueToBuzz({
       );
       seedEventId = event.id;
       socket.send(JSON.stringify(["EVENT", event]));
+      armTimeout(
+        writeTimeoutMs,
+        `The Buzz relay did not confirm the issue message within ${writeTimeoutMs}ms.`,
+      );
     }
 
-    socket.onerror = () => fail("Could not connect to the Buzz relay.");
+    function finishRecoveryQuery(timedOut = false) {
+      if (queryFinished) return;
+      queryFinished = true;
+      if (timer !== null) globalThis.clearTimeout(timer);
+      socket.send(JSON.stringify(["CLOSE", subscriptionId]));
+      if (existingMessageId) {
+        logger("Buzz relay: recovered the existing issue message.");
+        succeed(existingMessageId, true);
+        return;
+      }
+      if (timedOut) {
+        logger(
+          `Buzz relay: recovery query did not finish within ${recoveryQueryTimeoutMs}ms; continuing with the reserved channel.`,
+        );
+      } else {
+        logger("Buzz relay: no existing issue message found.");
+      }
+      sendCreateChannel();
+    }
+
+    logger("Buzz relay: connecting.");
+    armTimeout(
+      connectTimeoutMs,
+      `The Buzz relay connection did not open within ${connectTimeoutMs}ms.`,
+    );
+    socket.onopen = () => {
+      phase = "waiting for authentication";
+      logger("Buzz relay: connected; waiting for an authentication challenge.");
+      armTimeout(
+        authTimeoutMs,
+        `The Buzz relay did not issue an authentication challenge within ${authTimeoutMs}ms.`,
+      );
+    };
+    socket.onerror = () => fail(`The Buzz relay failed while ${phase}.`);
     socket.onclose = () => {
-      if (!settled) fail("The Buzz relay closed the connection.");
+      if (!settled) fail(`The Buzz relay closed while ${phase}.`);
     };
     socket.onmessage = (raw) => {
       let message;
@@ -360,6 +415,8 @@ export function publishIssueToBuzz({
       if (!Array.isArray(message) || typeof message[0] !== "string") return;
 
       if (message[0] === "AUTH" && typeof message[1] === "string" && !authEventId) {
+        phase = "authenticating";
+        logger("Buzz relay: authentication challenge received.");
         const event = finalizeEvent(
           {
             kind: 22242,
@@ -374,6 +431,10 @@ export function publishIssueToBuzz({
         );
         authEventId = event.id;
         socket.send(JSON.stringify(["AUTH", event]));
+        armTimeout(
+          authTimeoutMs,
+          `The Buzz relay did not confirm authentication within ${authTimeoutMs}ms.`,
+        );
         return;
       }
 
@@ -396,11 +457,7 @@ export function publishIssueToBuzz({
       }
 
       if (message[0] === "EOSE" && message[1] === subscriptionId) {
-        if (queryFinished) return;
-        queryFinished = true;
-        socket.send(JSON.stringify(["CLOSE", subscriptionId]));
-        if (existingMessageId) succeed(existingMessageId, true);
-        else sendCreateChannel();
+        finishRecoveryQuery();
         return;
       }
 
@@ -412,12 +469,19 @@ export function publishIssueToBuzz({
           fail(reason || "The Buzz relay rejected authentication.");
           return;
         }
+        phase = "checking for an existing issue message";
+        logger("Buzz relay: authenticated; checking for an existing issue message.");
         socket.send(
           JSON.stringify([
             "REQ",
             subscriptionId,
             { kinds: [9], authors: [author], "#h": [channelId], limit: 100 },
           ]),
+        );
+        armTimeout(
+          recoveryQueryTimeoutMs,
+          "Recovery query timed out.",
+          () => finishRecoveryQuery(true),
         );
         return;
       }
@@ -428,6 +492,11 @@ export function publishIssueToBuzz({
           fail(reason || "The Buzz relay could not create the channel.");
           return;
         }
+        logger(
+          accepted
+            ? "Buzz relay: channel created."
+            : "Buzz relay: reserved channel already exists; continuing.",
+        );
         sendSeedMessage();
         return;
       }
@@ -437,6 +506,7 @@ export function publishIssueToBuzz({
           fail(reason || "The Buzz relay rejected the issue message.");
           return;
         }
+        logger("Buzz relay: issue message accepted.");
         succeed(seedEventId);
       }
     };

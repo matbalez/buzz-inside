@@ -32,14 +32,21 @@ real relay use instead of becoming a mysterious recommendation system.
 
 - no application backend, analytics, browser storage, cookies, or local database
 - no DMs and no content writes
-- the nsec is decoded only in the current page's memory
-- key bytes sign NIP-42 authentication events and nothing else
-- key bytes are overwritten when the session is cleared or the page closes
+- authentication uses a user-installed NIP-07 signer such as nos2x or Alby
+- the page never requests, receives, or stores the user's private key
+- the signer is asked only for NIP-42 authentication events (kind `22242`)
+- every signed event is checked locally against the identity, relay, challenge,
+  timestamp, event ID, and signature before it is sent
 - restrictive CSP, permissions, framing, referrer, and content-type headers
 
-The key remains in page memory for the life of an authenticated session so the
-app can reconnect without asking for it again. Use Buzz Inside only on a device,
-browser, identity, and relay you trust.
+The authenticated relay socket exists only for the current tab. A reconnect
+requires a fresh, connection-bound signature from the installed signer.
+
+Install a NIP-07 signer before connecting:
+
+- [nos2x for Chrome and Chromium](https://chromewebstore.google.com/detail/nos2x/kpgefcfmnafjgpblomihpgmejjdanjjp)
+- [nos2x-fox for Firefox](https://addons.mozilla.org/firefox/addon/nos2x-fox/)
+- [Alby for Chromium and Firefox](https://github.com/getAlby/lightning-browser-extension)
 
 ## Local development
 

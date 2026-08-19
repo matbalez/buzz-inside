@@ -37,7 +37,9 @@ test("server-renders the trending-channel shell", async () => {
   assert.match(html, /<title>Buzz Inside — where the buzz is<\/title>/i);
   assert.match(html, /Where(?:&#x27;|')s the buzz\?/i);
   assert.match(html, /no backend · no analytics · no DMs · read-only/i);
-  assert.match(html, /find the buzz →/i);
+  assert.match(html, /continue with Nostr signer →/i);
+  assert.match(html, /NIP-07 signer/i);
+  assert.doesNotMatch(html, /type="password"|nsec1/i);
   assert.match(
     html,
     /href="https:\/\/github\.com\/matbalez\/buzz-inside"[^>]*>buzz inside is open source<\/a>/i,
@@ -46,14 +48,15 @@ test("server-renders the trending-channel shell", async () => {
 });
 
 test("keeps relay ranking transient and read-only by construction", async () => {
-  const [page, layout, packageJson] = await Promise.all([
+  const [page, signer, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/nostr-signer.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /kind:\s*22242/);
-  assert.match(page, /secretKeyRef\.current\?\.fill\(0\)/);
+  assert.match(page, /signNip42AuthEvent/);
+  assert.match(page, /signerRef/);
   assert.match(page, /socket\.send\(JSON\.stringify\(\["AUTH", authEvent\]\)\)/);
   assert.match(page, /RECONNECT_MAX_DELAY_MS\s*=\s*30_000/);
   assert.match(page, /channel\.type\s*!==\s*"dm"/);
@@ -66,7 +69,11 @@ test("keeps relay ranking transient and read-only by construction", async () => 
   assert.match(page, /limit:\s*maxLimitRef\.current/);
   assert.match(page, /chunkItems\(filters, maxFiltersRef\.current\)/);
   assert.doesNotMatch(page, /localStorage|sessionStorage|indexedDB/);
-  assert.doesNotMatch(page, /finalizeEvent\([\s\S]*kind:\s*(9007|9)/);
+  assert.doesNotMatch(page, /decodeSecret|secretKeyRef|finalizeEvent|nip19/);
+  assert.match(signer, /kind:\s*22242/);
+  assert.match(signer, /event\.pubkey !== pubkey\.toLowerCase\(\)/);
+  assert.match(signer, /event\.id !== getEventHash\(event\)/);
+  assert.match(signer, /!verifyEvent\(event\)/);
   assert.match(layout, /where the buzz is/);
   assert.match(packageJson, /"nostr-tools"/);
 });

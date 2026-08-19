@@ -14,6 +14,7 @@ import {
   signNip42AuthEvent,
 } from "./nostr-signer";
 import type { Nip07Signer } from "./nostr-signer";
+import { fetchRelayInfo, relayInfoUrls } from "./relay-info";
 import {
   chunkItems,
   heatLabel,
@@ -45,14 +46,6 @@ type NostrEvent = {
   tags: string[][];
   content: string;
   sig: string;
-};
-
-type RelayInfo = {
-  supported_nips?: number[];
-  limitation?: {
-    max_filters?: number;
-    max_limit?: number;
-  };
 };
 
 type Profile = {
@@ -99,33 +92,6 @@ function normalizeRelayUrl(value: string) {
   url.hash = "";
   url.search = "";
   return url.toString();
-}
-
-function relayInfoUrls(relayUrl: string) {
-  const url = new URL(relayUrl);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  const standard = url.toString();
-  const fallback = new URL("/info", url.origin).toString();
-  return standard === fallback ? [standard] : [standard, fallback];
-}
-
-async function fetchRelayInfo(relayUrl: string) {
-  let lastError: unknown;
-  for (const url of relayInfoUrls(relayUrl)) {
-    try {
-      const response = await fetch(url, {
-        cache: "no-store",
-        headers: { Accept: "application/nostr+json" },
-      });
-      if (!response.ok) throw new Error(`NIP-11 returned ${response.status}.`);
-      return (await response.json()) as RelayInfo;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Could not read relay information.");
 }
 
 function shortKey(value: string) {
@@ -527,20 +493,22 @@ export default function Home() {
     try {
       const nextRelayUrl = normalizeRelayUrl(relayInput);
       const info = await fetchRelayInfo(nextRelayUrl);
-      const supported = new Set(info.supported_nips || []);
-      const missing = REQUIRED_NIPS.filter((nip) => !supported.has(nip));
-      if (missing.length) {
-        throw new Error(
-          `This relay is missing required Buzz capabilities: NIP-${missing.join(", NIP-")}.`,
-        );
+      if (info) {
+        const supported = new Set(info.supported_nips || []);
+        const missing = REQUIRED_NIPS.filter((nip) => !supported.has(nip));
+        if (missing.length) {
+          throw new Error(
+            `This relay is missing required Buzz capabilities: NIP-${missing.join(", NIP-")}.`,
+          );
+        }
       }
 
-      const advertisedMaxFilters = info.limitation?.max_filters;
+      const advertisedMaxFilters = info?.limitation?.max_filters;
       maxFiltersRef.current =
         typeof advertisedMaxFilters === "number" && advertisedMaxFilters > 0
           ? Math.floor(advertisedMaxFilters)
           : DEFAULT_MAX_FILTERS;
-      const advertisedMaxLimit = info.limitation?.max_limit;
+      const advertisedMaxLimit = info?.limitation?.max_limit;
       maxLimitRef.current =
         typeof advertisedMaxLimit === "number" && advertisedMaxLimit > 0
           ? Math.floor(advertisedMaxLimit)

@@ -187,18 +187,6 @@ h1 {
   gap: 8px;
 }
 
-.label-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 14px;
-}
-
-.label-row span {
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .connect-form input {
   width: 100%;
   border: 1px solid var(--ink);
@@ -219,6 +207,12 @@ h1 {
   background: var(--ink);
   color: var(--paper);
   padding: 12px 18px;
+}
+
+.signer-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .error,

@@ -8,7 +8,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
+import {
+  getNip07Signer,
+  getSignerPublicKey,
+  signNip42AuthEvent,
+} from "./nostr-signer";
+import type { Nip07Signer } from "./nostr-signer";
 import {
   chunkItems,
   heatLabel,
@@ -123,16 +128,6 @@ async function fetchRelayInfo(relayUrl: string) {
     : new Error("Could not read relay information.");
 }
 
-function decodeSecret(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("nsec1")) {
-    throw new Error("Enter an nsec key for this controlled local prototype.");
-  }
-  const decoded = nip19.decode(trimmed);
-  if (decoded.type !== "nsec") throw new Error("That is not a valid nsec.");
-  return decoded.data;
-}
-
 function shortKey(value: string) {
   return value ? `${value.slice(0, 8)}…${value.slice(-8)}` : "";
 }
@@ -196,7 +191,6 @@ function channelDeepLink(channel: RankedChannel) {
 
 export default function Home() {
   const [relayInput, setRelayInput] = useState("");
-  const [secretInput, setSecretInput] = useState("");
   const [relayUrl, setRelayUrl] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState("");
@@ -212,7 +206,7 @@ export default function Home() {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   const socketRef = useRef<WebSocket | null>(null);
-  const secretKeyRef = useRef<Uint8Array | undefined>(undefined);
+  const signerRef = useRef<Nip07Signer | null>(null);
   const authEventIdRef = useRef("");
   const identityRef = useRef("");
   const shouldReconnectRef = useRef(false);
@@ -279,8 +273,7 @@ export default function Home() {
     const socket = socketRef.current;
     socketRef.current = null;
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000);
-    secretKeyRef.current?.fill(0);
-    secretKeyRef.current = undefined;
+    signerRef.current = null;
     authEventIdRef.current = "";
     identityRef.current = "";
     reconnectAttemptRef.current = 0;
@@ -288,7 +281,6 @@ export default function Home() {
     maxFiltersRef.current = DEFAULT_MAX_FILTERS;
     maxLimitRef.current = DEFAULT_MAX_LIMIT;
     pendingTrendSubscriptionsRef.current.clear();
-    setSecretInput("");
     setRelayUrl("");
     setPubkey("");
     setProfiles({});
@@ -348,8 +340,7 @@ export default function Home() {
         if (eventId === authEventIdRef.current) {
           if (!accepted) {
             shouldReconnectRef.current = false;
-            secretKeyRef.current?.fill(0);
-            secretKeyRef.current = undefined;
+            signerRef.current = null;
             setSessionReady(false);
             setError(reason || "The relay rejected authentication.");
             setPhase("error");
@@ -418,7 +409,7 @@ export default function Home() {
 
   const openSocket = useCallback(
     (nextRelayUrl: string, reconnecting: boolean) => {
-      if (!secretKeyRef.current || !shouldReconnectRef.current) return;
+      if (!signerRef.current || !shouldReconnectRef.current) return;
       if (challengeTimerRef.current !== null) {
         window.clearTimeout(challengeTimerRef.current);
       }
@@ -426,6 +417,7 @@ export default function Home() {
       setPhase(reconnecting ? "reconnecting" : "connecting");
 
       const socket = new WebSocket(nextRelayUrl);
+      let authChallenge = "";
       socketRef.current = socket;
       challengeTimerRef.current = window.setTimeout(() => {
         if (!authEventIdRef.current && socketRef.current === socket) {
@@ -445,7 +437,7 @@ export default function Home() {
         }
         if (socketRef.current !== socket) return;
         socketRef.current = null;
-        if (!shouldReconnectRef.current || !secretKeyRef.current) {
+        if (!shouldReconnectRef.current || !signerRef.current) {
           setPhase((current) => (current === "idle" ? current : "error"));
           return;
         }
@@ -471,28 +463,50 @@ export default function Home() {
         if (
           Array.isArray(parsed) &&
           parsed[0] === "AUTH" &&
-          typeof parsed[1] === "string" &&
-          secretKeyRef.current
+          typeof parsed[1] === "string"
         ) {
-          const authEvent = finalizeEvent(
-            {
-              kind: 22242,
-              created_at: Math.floor(Date.now() / 1000),
-              content: "",
-              tags: [
-                ["relay", nextRelayUrl],
-                ["challenge", parsed[1]],
-              ],
-            },
-            secretKeyRef.current,
-          );
-          authEventIdRef.current = authEvent.id;
-          socket.send(JSON.stringify(["AUTH", authEvent]));
-          setSecretInput("");
+          if (authChallenge || authEventIdRef.current) return;
+          const signer = signerRef.current;
+          const identity = identityRef.current;
+          const challenge = parsed[1];
+          if (!signer || !identity) return;
+          authChallenge = challenge;
           if (challengeTimerRef.current !== null) {
             window.clearTimeout(challengeTimerRef.current);
             challengeTimerRef.current = null;
           }
+
+          void signNip42AuthEvent({
+            signer,
+            pubkey: identity,
+            relayUrl: nextRelayUrl,
+            challenge,
+          })
+            .then((authEvent) => {
+              if (
+                socketRef.current !== socket ||
+                socket.readyState !== WebSocket.OPEN ||
+                signerRef.current !== signer ||
+                identityRef.current !== identity
+              ) {
+                return;
+              }
+              authEventIdRef.current = authEvent.id;
+              socket.send(JSON.stringify(["AUTH", authEvent]));
+            })
+            .catch((caught) => {
+              if (socketRef.current !== socket) return;
+              shouldReconnectRef.current = false;
+              signerRef.current = null;
+              setSessionReady(false);
+              setError(
+                caught instanceof Error
+                  ? caught.message
+                  : "The Nostr signer rejected authentication.",
+              );
+              setPhase("error");
+              socket.close();
+            });
           return;
         }
         handleRelayMessage(message);
@@ -510,11 +524,8 @@ export default function Home() {
     setError("");
     setPhase("checking");
 
-    let secretKey: Uint8Array | undefined;
     try {
       const nextRelayUrl = normalizeRelayUrl(relayInput);
-      secretKey = decodeSecret(secretInput);
-      const nextPubkey = getPublicKey(secretKey);
       const info = await fetchRelayInfo(nextRelayUrl);
       const supported = new Set(info.supported_nips || []);
       const missing = REQUIRED_NIPS.filter((nip) => !supported.has(nip));
@@ -535,22 +546,18 @@ export default function Home() {
           ? Math.floor(advertisedMaxLimit)
           : DEFAULT_MAX_LIMIT;
 
-      secretKeyRef.current?.fill(0);
-      secretKeyRef.current = secretKey;
-      secretKey = undefined;
+      const signer = getNip07Signer(window);
+      const nextPubkey = await getSignerPublicKey(signer);
+      signerRef.current = signer;
       shouldReconnectRef.current = true;
       reconnectAttemptRef.current = 0;
-      setSecretInput("");
       setRelayUrl(nextRelayUrl);
       setPubkey(nextPubkey);
       identityRef.current = nextPubkey;
       openSocketRef.current(nextRelayUrl, false);
     } catch (caught) {
-      secretKey?.fill(0);
-      secretKeyRef.current?.fill(0);
-      secretKeyRef.current = undefined;
+      signerRef.current = null;
       shouldReconnectRef.current = false;
-      setSecretInput("");
       setError(caught instanceof Error ? caught.message : "Could not connect.");
       setPhase("error");
     }
@@ -764,24 +771,6 @@ export default function Home() {
               required
             />
 
-            <div className="label-row">
-              <label htmlFor="secret">nsec</label>
-              <span>memory only · cleared with this session</span>
-            </div>
-            <input
-              id="secret"
-              name="secret"
-              type="password"
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              placeholder="nsec1…"
-              value={secretInput}
-              onChange={(event) => setSecretInput(event.target.value)}
-              disabled={phase !== "idle" && phase !== "error"}
-              required
-            />
-
             <button
               className="primary-button"
               type="submit"
@@ -791,8 +780,36 @@ export default function Home() {
               {phase === "connecting" && "connecting…"}
               {phase === "authenticating" && "authenticating…"}
               {phase === "reconnecting" && "reconnecting…"}
-              {(phase === "idle" || phase === "error") && "find the buzz →"}
+              {(phase === "idle" || phase === "error") &&
+                "continue with Nostr signer →"}
             </button>
+            <p className="signer-note">
+              Uses an installed NIP-07 signer. Need one? Try{" "}
+              <a
+                href="https://chromewebstore.google.com/detail/nos2x/kpgefcfmnafjgpblomihpgmejjdanjjp"
+                target="_blank"
+                rel="noreferrer"
+              >
+                nos2x for Chromium
+              </a>{" "}
+              ·{" "}
+              <a
+                href="https://addons.mozilla.org/firefox/addon/nos2x-fox/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                nos2x-fox for Firefox
+              </a>{" "}
+              ·{" "}
+              <a
+                href="https://github.com/getAlby/lightning-browser-extension"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Alby
+              </a>
+              .
+            </p>
           </form>
 
           {error ? (
@@ -810,7 +827,8 @@ export default function Home() {
             <p>no backend · no analytics · no DMs · read-only</p>
             <p>
               Activity is ranked in this tab from data your identity can already
-              read. Your key never leaves the browser.
+              read. Your private key stays in your signer; this page receives only
+              your public key and a signed relay authentication event.
             </p>
           </div>
         </section>

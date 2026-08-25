@@ -62,6 +62,7 @@ test("keeps relay ranking transient and read-only by construction", async () => 
   assert.match(page, /channel\.type\s*!==\s*"dm"/);
   assert.match(page, /rankChannels\(channels, trendEvents, now\)/);
   assert.match(page, /rankActiveUsers\(channels, trendEvents, now\)/);
+  assert.match(page, /relayPulse\(channels, trendEvents, now\)/);
   assert.match(page, /profiles\[user\.pubkey\]\?\.isAgent === false/);
   assert.match(page, /safeProfile\(event\.content, event\.tags\)/);
   assert.match(page, /SYSTEM_MESSAGE_KIND/);
@@ -85,6 +86,12 @@ test("lays out a ranked board with a responsive channel detail pane", async () =
   ]);
 
   assert.match(page, /className="trend-list"/);
+  assert.match(page, /className="pulse-strip"/);
+  assert.match(page, /messages · last hour/);
+  assert.match(page, /active rooms · last hour/);
+  assert.match(page, /new joins · 24 hours/);
+  assert.match(page, /channelMomentumLabel\(channel\)/);
+  assert.match(page, /latestContent/);
   assert.match(page, /className="people-panel"/);
   assert.match(page, /Most active users/);
   assert.match(page, /className="trend-name channel-name-link"/);
@@ -110,6 +117,11 @@ test("lays out a ranked board with a responsive channel detail pane", async () =
     styles,
     /\.signal-grid\s*\{[^}]*grid-template-columns:/s,
   );
+  assert.match(
+    styles,
+    /\.pulse-strip\s*\{[^}]*grid-template-columns:\s*repeat\(6,/s,
+  );
+  assert.match(styles, /\.pulse-stat\.primary\s*\{[^}]*var\(--signal\)/s);
   assert.match(styles, /\.person-channels\s*\{[^}]*display:\s*grid;/s);
   assert.match(
     styles,

@@ -16,6 +16,7 @@ import {
 import type { Nip07Signer } from "./nostr-signer";
 import { fetchRelayInfo, relayInfoUrls } from "./relay-info";
 import {
+  channelMomentumLabel,
   chunkItems,
   heatLabel,
   isAgentProfileEvent,
@@ -23,6 +24,7 @@ import {
   MESSAGE_EVENT_KINDS,
   rankActiveUsers,
   rankChannels,
+  relayPulse,
   SYSTEM_MESSAGE_KIND,
   systemPayload,
   TREND_LOOKBACK_SECONDS,
@@ -144,6 +146,12 @@ function contentWithLinks(content: string) {
       </a>
     );
   });
+}
+
+function compactContent(content: string, maxLength = 110) {
+  const compact = content.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
 function channelDeepLink(channel: RankedChannel) {
@@ -641,6 +649,10 @@ export default function Home() {
         .slice(0, 12),
     [channels, now, profiles, trendEvents],
   );
+  const pulse = useMemo(
+    () => relayPulse(channels, trendEvents, now),
+    [channels, now, trendEvents],
+  );
   const selectedChannel =
     rankedChannels.find((channel) => channel.id === selectedChannelId) || null;
   const selectedEvents = useMemo(
@@ -805,11 +817,11 @@ export default function Home() {
           <section className="trend-board" aria-labelledby="trend-title">
             <div className="board-intro">
               <div>
-                <p className="eyebrow">live relay signal · past 24 hours</p>
+                <p className="eyebrow">live relay signal</p>
                 <div className="board-title-line">
-                  <h1 id="trend-title">Where&apos;s the buzz?</h1>
+                  <h1 id="trend-title">Where&apos;s the action?</h1>
                   <p className="board-lede">
-                    Messages, replies, new joins, and newly created channels.
+                    The rooms moving now, who is driving them, and what changed.
                   </p>
                 </div>
               </div>
@@ -824,6 +836,45 @@ export default function Home() {
                 relay notice: {error}
               </p>
             ) : null}
+
+            <section className="pulse-strip" aria-label="Relay pulse">
+              <PulseStat
+                label="messages · last hour"
+                value={pulse.messages1h}
+                loading={loadingTrends && trendEvents.length === 0}
+                note={
+                  pulse.latestAt
+                    ? `latest ${relativeTime(pulse.latestAt, now)}`
+                    : "no recent posts"
+                }
+                primary
+              />
+              <PulseStat
+                label="active rooms · last hour"
+                value={pulse.activeChannels1h}
+                loading={loadingTrends && trendEvents.length === 0}
+              />
+              <PulseStat
+                label="voices · last hour"
+                value={pulse.voices1h}
+                loading={loadingTrends && trendEvents.length === 0}
+              />
+              <PulseStat
+                label="messages · 24 hours"
+                value={pulse.messages24h}
+                loading={loadingTrends && trendEvents.length === 0}
+              />
+              <PulseStat
+                label="new joins · 24 hours"
+                value={pulse.joins24h}
+                loading={loadingTrends && trendEvents.length === 0}
+              />
+              <PulseStat
+                label="new rooms · 7 days"
+                value={pulse.newChannels7d}
+                loading={loadingTrends && trendEvents.length === 0}
+              />
+            </section>
 
             <div className="signal-grid">
               <section className="channel-panel" aria-label="Trending channels">
@@ -857,6 +908,7 @@ export default function Home() {
                       index={rankedChannels.indexOf(channel) + 1 || index + 1}
                       key={channel.id}
                       now={now}
+                      profiles={profiles}
                       selected={channel.id === selectedChannelId}
                       onSelect={() =>
                         setSelectedChannelId((current) =>
@@ -989,20 +1041,50 @@ export default function Home() {
   );
 }
 
+function PulseStat({
+  label,
+  value,
+  loading,
+  note,
+  primary = false,
+}: {
+  label: string;
+  value: number;
+  loading: boolean;
+  note?: string;
+  primary?: boolean;
+}) {
+  return (
+    <div className={primary ? "pulse-stat primary" : "pulse-stat"}>
+      <span>{label}</span>
+      <strong>{loading ? "—" : value.toLocaleString()}</strong>
+      {note ? <small>{note}</small> : null}
+    </div>
+  );
+}
+
 function TrendRow({
   channel,
   index,
   now,
+  profiles,
   selected,
   onSelect,
 }: {
   channel: RankedChannel;
   index: number;
   now: number;
+  profiles: Record<string, Profile>;
   selected: boolean;
   onSelect: () => void;
 }) {
   const link = channelDeepLink(channel);
+  const latestContent = compactContent(channel.latestEvent?.content || "");
+  const latestAuthor = channel.latestEvent
+    ? profiles[channel.latestEvent.pubkey]?.display_name ||
+      profiles[channel.latestEvent.pubkey]?.name ||
+      shortKey(channel.latestEvent.pubkey)
+    : "";
   return (
     <div className={selected ? "trend-row selected" : "trend-row"}>
       <button
@@ -1022,7 +1104,9 @@ function TrendRow({
           <span className="trend-name"># {channel.name}</span>
         )}
         <span className="trend-about">
-          {channel.about || `${channel.members} member channel`}
+          {latestContent
+            ? `${latestAuthor}: ${latestContent}`
+            : channel.about || `${channel.members} member channel`}
         </span>
       </span>
       <span className="trend-signal">
@@ -1030,8 +1114,7 @@ function TrendRow({
           <span style={{ width: `${channel.relativeHeat}%` }} />
         </span>
         <span className="heat-label">
-          {heatLabel(channel)}
-          {channel.createdAt ? " · new" : ""}
+          <b>{heatLabel(channel)}</b> · {channelMomentumLabel(channel)}
         </span>
       </span>
       <span className="trend-metrics">

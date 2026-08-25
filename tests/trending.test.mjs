@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  channelMomentumLabel,
   chunkItems,
   CREATION_HALF_LIFE_HOURS,
   heatLabel,
@@ -9,6 +10,7 @@ import {
   MAX_AUTHOR_MESSAGES_PER_HOUR,
   rankActiveUsers,
   rankChannels,
+  relayPulse,
   SYSTEM_MESSAGE_KIND,
   TREND_HALF_LIFE_HOURS,
 } from "../app/trending.ts";
@@ -159,6 +161,62 @@ test("recent joins and channel creation lift otherwise quiet channels", () => {
   assert.equal(ranked[0].joins24h, 2);
   assert.equal(ranked[0].createdAt, NOW - 2 * 3600);
   assert.ok(ranked[0].score > ranked[1].score);
+});
+
+test("summarizes the relay's immediate pulse without leaking hidden channels", () => {
+  const channels = [
+    channel("public"),
+    channel("joined-private", { visibility: "private", isMember: true }),
+    channel("hidden-private", { visibility: "private" }),
+    channel("dm", { type: "dm", isMember: true }),
+  ];
+  const events = [
+    event("public-now-a", "public", 0.25, "alice"),
+    event("public-now-b", "public", 0.5, "bob"),
+    event("private-now", "joined-private", 0.75, "alice"),
+    event("public-today", "public", 5, "carol"),
+    event("hidden", "hidden-private", 0.1, "mallory"),
+    event("direct", "dm", 0.1, "mallory"),
+    systemEvent("join", "public", 2, "member_joined", "dana"),
+    systemEvent("created", "public", 36, "channel_created"),
+    systemEvent("duplicate-created", "public", 40, "channel_created"),
+  ];
+
+  assert.deepEqual(relayPulse(channels, events, NOW), {
+    messages1h: 3,
+    messages24h: 4,
+    voices1h: 2,
+    activeChannels1h: 2,
+    joins24h: 1,
+    newChannels7d: 1,
+    latestAt: NOW - 0.25 * 3600,
+  });
+});
+
+test("explains why a channel is moving in plain language", () => {
+  const [live] = rankChannels(
+    [channel("live")],
+    [event("live-message", "live", 0.5)],
+    NOW,
+  );
+  assert.equal(channelMomentumLabel(live), "1 message in the last hour");
+
+  const [today] = rankChannels(
+    [channel("today")],
+    [event("today-message", "today", 4)],
+    NOW,
+  );
+  assert.equal(channelMomentumLabel(today), "1 message today");
+
+  const [gathering] = rankChannels(
+    [channel("gathering")],
+    [
+      systemEvent("new", "gathering", 2, "channel_created"),
+      systemEvent("new-member", "gathering", 1, "member_joined"),
+    ],
+    NOW,
+  );
+  assert.equal(channelMomentumLabel(gathering), "new channel · 1 joined today");
 });
 
 test("ranks active users from public-channel messages only", () => {

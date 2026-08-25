@@ -64,6 +64,16 @@ export type ActiveUser = {
   topChannels: ActiveUserChannel[];
 };
 
+export type RelayPulse = {
+  messages1h: number;
+  messages24h: number;
+  voices1h: number;
+  activeChannels1h: number;
+  joins24h: number;
+  newChannels7d: number;
+  latestAt?: number;
+};
+
 type SystemPayload = {
   type?: string;
   actor?: string;
@@ -226,6 +236,80 @@ export function rankChannels(
       ? Math.max(2, Math.round((channel.score / leaderScore) * 100))
       : 0,
   }));
+}
+
+export function relayPulse(
+  channels: TrendChannel[],
+  events: TrendEvent[],
+  now = Math.floor(Date.now() / 1000),
+): RelayPulse {
+  const visibleChannels = new Set(
+    channels
+      .filter(
+        (channel) =>
+          channel.type !== "dm" &&
+          !channel.archived &&
+          (channel.isMember || channel.visibility === "open"),
+      )
+      .map((channel) => channel.id),
+  );
+  const voices1h = new Set<string>();
+  const activeChannels1h = new Set<string>();
+  const createdChannels = new Set<string>();
+  let messages1h = 0;
+  let messages24h = 0;
+  let joins24h = 0;
+  let latestAt: number | undefined;
+
+  for (const event of events) {
+    const id = channelId(event);
+    if (!visibleChannels.has(id)) continue;
+    const age = now - event.created_at;
+    if (age < 0 || age > TREND_LOOKBACK_SECONDS) continue;
+
+    if (isMessageEvent(event)) {
+      latestAt = Math.max(latestAt || 0, event.created_at);
+      if (age <= 24 * 60 * 60) messages24h += 1;
+      if (age <= 60 * 60) {
+        messages1h += 1;
+        voices1h.add(event.pubkey);
+        activeChannels1h.add(id);
+      }
+      continue;
+    }
+
+    const type = systemPayload(event)?.type;
+    if (type === "member_joined" && age <= 24 * 60 * 60) joins24h += 1;
+    if (type === "channel_created") createdChannels.add(id);
+  }
+
+  return {
+    messages1h,
+    messages24h,
+    voices1h: voices1h.size,
+    activeChannels1h: activeChannels1h.size,
+    joins24h,
+    newChannels7d: createdChannels.size,
+    latestAt,
+  };
+}
+
+export function channelMomentumLabel(channel: RankedChannel) {
+  if (channel.messages1h > 0) {
+    return `${channel.messages1h} ${channel.messages1h === 1 ? "message" : "messages"} in the last hour`;
+  }
+  if (channel.messages24h > 0) {
+    return `${channel.messages24h} ${channel.messages24h === 1 ? "message" : "messages"} today`;
+  }
+  if (channel.createdAt && channel.joins24h > 0) {
+    return `new channel · ${channel.joins24h} joined today`;
+  }
+  if (channel.createdAt) return "new channel this week";
+  if (channel.joins24h > 0) {
+    return `${channel.joins24h} ${channel.joins24h === 1 ? "person" : "people"} joined today`;
+  }
+  if (channel.messages7d > 0) return "conversation this week";
+  return "quiet this week";
 }
 
 export function rankActiveUsers(

@@ -19,6 +19,10 @@ appear.
 - recent member joins and newly created channels receive separate, decaying
   discovery boosts without inflating the visible message total
 - raw 24-hour message and author counts remain visible beside the score
+- a relay pulse summarizes last-hour conversation, active rooms and voices,
+  plus recent joins and channel launches before the ranked list
+- each ranked room explains why it is moving and shows its latest conversation
+  excerpt, so the board is useful before opening a channel
 - a public-channel leaderboard shows the most active users over 24 hours and
   their top three channels; NIP-OA agent identities are excluded
 - channel names link directly to their latest activity in Buzz, and channel

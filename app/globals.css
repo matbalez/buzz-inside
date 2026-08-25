@@ -371,6 +371,59 @@ h1 {
   font-size: 11px;
 }
 
+.pulse-strip {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(6, minmax(128px, 1fr));
+  margin-bottom: 12px;
+  overflow-x: auto;
+  border: solid var(--ink);
+  border-width: 1px 0;
+  scrollbar-width: thin;
+}
+
+.pulse-stat {
+  display: grid;
+  min-height: 64px;
+  align-content: center;
+  border-right: 1px solid var(--line);
+  padding: 7px 12px;
+}
+
+.pulse-stat:last-child {
+  border-right: 0;
+}
+
+.pulse-stat.primary {
+  background: var(--signal);
+  border-right-color: var(--ink);
+}
+
+.pulse-stat > span {
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pulse-stat.primary > span,
+.pulse-stat.primary > small {
+  color: var(--ink);
+}
+
+.pulse-stat strong {
+  margin-top: 1px;
+  font-size: clamp(18px, 2vw, 26px);
+  font-weight: 400;
+  letter-spacing: -0.05em;
+  line-height: 1.1;
+}
+
+.pulse-stat small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
 .trend-list {
   min-height: 150px;
   flex: 1;
@@ -383,7 +436,7 @@ h1 {
   position: relative;
   display: grid;
   width: 100%;
-  grid-template-columns: 30px minmax(160px, 1.35fr) minmax(90px, 0.65fr) minmax(125px, 0.8fr) 72px 14px;
+  grid-template-columns: 30px minmax(180px, 1.35fr) minmax(170px, 0.9fr) minmax(120px, 0.7fr) 72px 14px;
   align-items: center;
   gap: clamp(8px, 1.4vw, 20px);
   border: 0;
@@ -482,6 +535,11 @@ h1 {
 .heat-label {
   color: var(--muted);
   font-size: 9px;
+}
+
+.heat-label b {
+  color: var(--ink);
+  font-weight: 400;
   text-transform: uppercase;
 }
 
@@ -787,7 +845,7 @@ h1 {
   }
 
   .trend-row {
-    grid-template-columns: 34px minmax(170px, 1.3fr) minmax(100px, 0.7fr) 110px 74px 16px;
+    grid-template-columns: 34px minmax(170px, 1.2fr) minmax(160px, 0.8fr) 104px 74px 16px;
     gap: 12px;
   }
 
@@ -890,13 +948,36 @@ h1 {
 
   .trend-row {
     grid-template-columns: 26px minmax(0, 1fr) 70px 14px;
+    grid-template-areas:
+      "rank channel membership arrow"
+      ". signal signal .";
     gap: 9px;
     padding: 14px 4px 14px 0;
   }
 
-  .trend-signal,
   .trend-metrics {
     display: none;
+  }
+
+  .trend-rank {
+    grid-area: rank;
+  }
+
+  .trend-channel {
+    grid-area: channel;
+  }
+
+  .trend-signal {
+    grid-area: signal;
+    margin-top: 2px;
+  }
+
+  .trend-row .membership {
+    grid-area: membership;
+  }
+
+  .row-arrow {
+    grid-area: arrow;
   }
 
   .trend-name {
